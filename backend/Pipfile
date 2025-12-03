@@ -1,0 +1,26 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+djangorestframework = "*"
+django-environ = "*"
+django-cors-headers = "*"
+channels = "*"
+channels-redis = "*"
+celery = "*"
+redis = "*"
+psycopg2-binary = "*"
+qdrant-client = "*"
+pypdf = "*"
+python-docx = "*"
+httpx = "*"
+
+[dev-packages]
+black = "*"
+ruff = "*"
+
+[requires]
+python_version = "3.10"
+python_full_version = "3.10.14"
