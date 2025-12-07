@@ -118,10 +118,6 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
         </button>
       </div>
 
-      <div style={{ marginBottom: 8, color: "#aaa", fontSize: 13 }}>
-        {project ? <div>Project: <strong className="truncate">{project.name}</strong></div> : <div>All documents</div>}
-      </div>
-
       <div className="documents-list" style={{
         display: "flex",
         flexDirection: "column",
