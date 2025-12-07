@@ -4,3 +4,5 @@
 4. start django app
 5. create super user
 6. celery local pointing to docker redis
+
+http://localhost:6333/dashboard

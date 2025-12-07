@@ -71,5 +71,21 @@ services:
       - ./backend:/app
     command: celery -A askyourdocs worker --loglevel=info --concurrency=1
     restart: unless-stopped
+  
+  frontend:
+    image: node:18-bullseye
+    working_dir: /app
+    volumes:
+      - ./frontend/askyourdocs:/app:rw
+      - /app/node_modules           # prevents host node_modules from interfering
+    ports:
+      - "3000:3000"
+    environment:
+      - CHOKIDAR_USEPOLLING=true   # helps file watching on macOS
+      - BROWSER=none               # prevents container from trying to open a browser
+      - HOST=0.0.0.0               # serve on 0.0.0.0 so host can access
+    command: sh -c "npm install --no-audit --no-fund && npm start"
+    restart: unless-stopped
+
 
 volumes: {}

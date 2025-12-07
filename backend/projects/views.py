@@ -4,12 +4,15 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from .models import Project
 from .serializers import ProjectSerializer
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ProjectListCreateView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        qs = Project.objects.filter(owner=request.user) if request.user.is_authenticated else Project.objects.none()
+        qs = Project.objects.all()
         serializer = ProjectSerializer(qs, many=True)
         return Response(serializer.data)
 
