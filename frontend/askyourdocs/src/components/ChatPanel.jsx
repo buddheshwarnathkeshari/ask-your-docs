@@ -1,35 +1,47 @@
 // src/components/ChatPanel.jsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { createConversation, postMessage } from "../api";
-import { updateProject } from "../api"; // optional
+import { updateProject } from "../api"; // optional direct import (or use parent callback)
 
 export default function ChatPanel({ project, onProjectRename }) {
   const [conv, setConv] = useState(null);
-  const [messages, setMessages] = useState([]); // messages from server or optimistic
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [docsPresent, setDocsPresent] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
+
+  // edit modal states
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
-  const [sending, setSending] = useState(false); // used to show typing placeholder
+
+  const [expandedMessages, setExpandedMessages] = useState(() => new Set()); // track expanded message ids/keys
 
   const messagesRef = useRef(null);
 
-  // Create or reuse conversation for project
+  // helper: check documents using event-driven approach (RightPanel dispatches)
+  useEffect(() => {
+    const handler = async (ev) => {
+      if (!project) return;
+      const pid = ev.detail?.projectId;
+      if (String(pid) !== String(project.id)) return;
+      await ensureConversation();
+    };
+    window.addEventListener("documents:updated", handler);
+    return () => window.removeEventListener("documents:updated", handler);
+  }, [project]);
+
   async function ensureConversation() {
     if (!project) return;
     try {
       const resp = await createConversation(project.id);
       if (resp && resp.id) {
         setConv({ id: resp.id });
-        // server returns messages with citations (ConversationCreateView)
         if (Array.isArray(resp.messages) && resp.messages.length > 0) {
-          setMessages(resp.messages);
+          setMessages(resp.messages.map(m => ({ ...m })));
           setDocsPresent(true);
         } else {
-          // no messages yet, but documents exist on server (we consider docsPresent true because createConversation succeeded for project)
-          setMessages([]);
           setDocsPresent(true);
+          setMessages([]);
         }
       }
     } catch (err) {
@@ -45,132 +57,162 @@ export default function ChatPanel({ project, onProjectRename }) {
     setDocsPresent(false);
     setEditing(false);
     setEditName("");
-    setSending(false);
+    setExpandedMessages(new Set());
     if (!project) return;
     ensureConversation();
   }, [project?.id]);
 
-  // listen to docs updated events from RightPanel (upload / delete)
-  useEffect(() => {
-    const handler = async (ev) => {
-      if (!project) return;
-      const pid = ev.detail?.projectId;
-      if (String(pid) !== String(project.id)) return;
-      // re-create / reuse conversation to make sure messages/citations restored
-      await ensureConversation();
-    };
-    window.addEventListener("documents:updated", handler);
-    return () => window.removeEventListener("documents:updated", handler);
-  }, [project]);
-
-  // auto-scroll when messages change but only if user is at bottom
-  useEffect(() => {
-    const node = messagesRef.current;
-    if (!node) return;
-    if (isAtBottom) node.scrollTop = node.scrollHeight;
-  }, [messages, isAtBottom]);
-
-  // track scroll to show "go to bottom"
-  useEffect(() => {
-    const node = messagesRef.current;
-    if (!node) return;
-    const onScroll = () => {
-      const tolerance = 20;
-      const atBottom = (node.scrollHeight - node.scrollTop - node.clientHeight) <= tolerance;
-      setIsAtBottom(atBottom);
-    };
-    node.addEventListener("scroll", onScroll);
-    onScroll();
-    return () => node.removeEventListener("scroll", onScroll);
-  }, []);
-
-  // helper to dispatch scroll event to RightPanel
-  function scrollToDocument(docId) {
-    window.dispatchEvent(new CustomEvent("documents:scrollTo", { detail: { documentId: docId } }));
+  // helper to compute if scroll is at bottom
+  function checkAtBottom(node, tolerance = 20) {
+    if (!node) return true;
+    const scrollTop = typeof node.scrollTop === "number" ? node.scrollTop : 0;
+    const scrollHeight = typeof node.scrollHeight === "number" ? node.scrollHeight : 0;
+    const clientHeight = typeof node.clientHeight === "number" ? node.clientHeight : 0;
+    const atBottom = (scrollHeight - scrollTop - clientHeight) <= tolerance;
+    return atBottom;
   }
 
-  // render message text + inline chips
-  function renderMessageHTML(text, citations = []) {
-    // We want inline chips for referenced documents. The backend's pretty_replace_sources might have
-    // inserted readable titles in square brackets. But to be robust, we'll insert chips by scanning
-    // for each citation.document_title and replacing the first occurrence with a chip.
-    let html = text || "";
-    if (!citations || citations.length === 0) return { __html: html.replace(/\n/g, "<br/>") };
-
-    for (const c of citations) {
-      const title = c.document_title || c.document_id || "source";
-      const short = title.length > 60 ? title.slice(0, 56).trim() + "..." : title;
-      // escape for regexp
-      const esc = short.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const patt = new RegExp(esc);
-      // only replace first occurrence
-      if (patt.test(html)) {
-        // insert a clickable span with data-docid for mapping
-        const span = `<span class="source-chip" data-docid="${c.document_id}">${short}</span>`;
-        html = html.replace(patt, span);
-      } else {
-        // fallback: try to replace the document_title if it's longer than short (non-truncated)
-        const fullEsc = (c.document_title || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (fullEsc && new RegExp(fullEsc).test(html)) {
-          html = html.replace(new RegExp(fullEsc), `<span class="source-chip" data-docid="${c.document_id}">${short}</span>`);
-        }
+  // throttle helper
+  function throttle(fn, wait = 50) {
+    let last = 0;
+    let timeout = null;
+    return (...args) => {
+      const now = Date.now();
+      const remaining = wait - (now - last);
+      if (remaining <= 0) {
+        if (timeout) { clearTimeout(timeout); timeout = null; }
+        last = now;
+        fn(...args);
+      } else if (!timeout) {
+        timeout = setTimeout(() => {
+          last = Date.now();
+          timeout = null;
+          fn(...args);
+        }, remaining);
       }
+    };
+  }
+
+  // Robust single effect to attach scroll listener, resize observer, and window resize.
+  useEffect(() => {
+    let attached = false;
+    let ro = null;
+    let node = messagesRef.current;
+    let intervalId = null;
+
+    // declare cleanup early so attach can overwrite it safely
+    let cleanup = () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+
+    const attach = () => {
+      if (attached) return;
+      node = messagesRef.current;
+      if (!node) return;
+      attached = true;
+
+      const updateAtBottom = () => {
+        const atBottom = checkAtBottom(node);
+        setIsAtBottom(atBottom);
+        console.debug("updateAtBottom", { scrollTop: node.scrollTop, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight, atBottom });
+      };
+
+      const onScroll = throttle(() => {
+        updateAtBottom();
+      }, 50);
+
+      node.addEventListener("scroll", onScroll, { passive: true });
+      window.addEventListener("resize", updateAtBottom);
+
+      if (typeof ResizeObserver !== "undefined") {
+        ro = new ResizeObserver(() => {
+          // allow a frame for transitions/layout to settle
+          requestAnimationFrame(() => updateAtBottom());
+        });
+        ro.observe(node);
+      }
+
+      // initial check after next paint
+      requestAnimationFrame(() => updateAtBottom());
+
+      // override cleanup to remove listeners when needed
+      cleanup = () => {
+        try { node.removeEventListener("scroll", onScroll); } catch (e) {}
+        try { window.removeEventListener("resize", updateAtBottom); } catch (e) {}
+        if (ro) {
+          try { ro.disconnect(); } catch (e) {}
+          ro = null;
+        }
+        if (intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+      };
+    };
+
+    // If ref not ready, poll briefly until it exists (max 2s)
+    if (!node) {
+      const start = Date.now();
+      intervalId = setInterval(() => {
+        if (messagesRef.current) {
+          attach();
+          if (intervalId) { clearInterval(intervalId); intervalId = null; }
+        } else if (Date.now() - start > 2000) {
+          if (intervalId) { clearInterval(intervalId); intervalId = null; }
+        }
+      }, 50);
+    } else {
+      attach();
     }
 
-    // convert newlines to <br/>
-    html = html.replace(/\n/g, "<br/>");
+    return () => {
+      cleanup();
+    };
+    // reattach when project changes (new chat window size/structure)
+  }, [project?.id]);
 
-    return { __html: html };
-  }
-
-  // attach click handler for inline chips (delegation)
-  useEffect(() => {
+  // Auto-scroll after messages update when the user is at bottom
+  // useLayoutEffect to avoid flicker (runs before paint)
+  useLayoutEffect(() => {
     const node = messagesRef.current;
     if (!node) return;
-    const onClick = (e) => {
-      const chip = e.target.closest && e.target.closest(".source-chip");
-      if (chip) {
-        const docId = chip.getAttribute("data-docid");
-        if (docId) {
-          scrollToDocument(docId);
-        }
-      }
-    };
-    node.addEventListener("click", onClick);
-    return () => node.removeEventListener("click", onClick);
-  }, []);
+    if (isAtBottom) {
+      // scroll to bottom
+      node.scrollTop = node.scrollHeight;
+    } else {
+      // re-evaluate and correct flag if needed
+      const atBottom = checkAtBottom(node);
+      if (atBottom) setIsAtBottom(true);
+    }
+  }, [messages, isAtBottom]);
 
-  // optimistic send: add user msg, show local typing bubble, then append assistant
+  // send / UI functions
   async function send() {
     if (!input.trim()) return;
     if (!conv) { alert("No conversation created"); return; }
 
-    const text = input.trim();
-    // add user message
-    setMessages(prev => [...prev, { role: "user", text, created_at: new Date().toISOString() }]);
+    // optimistic user message
+    setMessages(prev => [...prev, { role: "user", text: input }]);
     setInput("");
+    // we want to auto-scroll for user messages
     setIsAtBottom(true);
-    setSending(true); // show typing
 
     try {
-      const res = await postMessage(conv.id, text);
-      // remove typing indicator (we show server assistant next)
-      setSending(false);
+      const res = await postMessage(conv.id, input);
       if (res && res.answer) {
-        setMessages(prev => [...prev, { role: "assistant", text: res.answer, citations: res.citations || [], created_at: new Date().toISOString() }]);
-      } else if (res && res.detail) {
-        setMessages(prev => [...prev, { role: "assistant", text: `Error: ${res.detail}`, created_at: new Date().toISOString() }]);
+        setMessages(prev => [...prev, { role: "assistant", text: res.answer, citations: res.citations || [] }]);
       } else {
-        setMessages(prev => [...prev, { role: "assistant", text: "No answer (error)", created_at: new Date().toISOString() }]);
+        setMessages(prev => [...prev, { role: "assistant", text: "No answer (error)" }]);
       }
     } catch (err) {
       console.error("send message error", err);
-      setSending(false);
-      setMessages(prev => [...prev, { role: "assistant", text: "Send failed", created_at: new Date().toISOString() }]);
+      setMessages(prev => [...prev, { role: "assistant", text: "Send failed" }]);
     }
   }
 
-  // go to bottom helper
   function goToBottom() {
     const node = messagesRef.current;
     if (!node) return;
@@ -178,7 +220,7 @@ export default function ChatPanel({ project, onProjectRename }) {
     setIsAtBottom(true);
   }
 
-  // edit project name (modal)
+  // Edit modal handlers
   function openEdit() {
     setEditName(project?.name || "");
     setEditing(true);
@@ -200,12 +242,92 @@ export default function ChatPanel({ project, onProjectRename }) {
     }
   }
 
-  // final UI
+  // Expand/collapse helpers
+  function keyForMessage(m, idx) {
+    // use stable key: message id if available, otherwise created_at, else index
+    return m.id || m.created_at || `idx_${idx}`;
+  }
+
+  function isExpanded(m, idx) {
+    const key = keyForMessage(m, idx);
+    return expandedMessages.has(key);
+  }
+
+  function toggleExpand(m, idx) {
+    const key = keyForMessage(m, idx);
+    setExpandedMessages(prev => {
+      const nxt = new Set(prev);
+      if (nxt.has(key)) nxt.delete(key);
+      else nxt.add(key);
+      return nxt;
+    });
+
+    // force a re-check after the DOM updates/layout settles
+    // small timeout gives the browser one render tick to apply layout changes
+    setTimeout(() => {
+      const node = messagesRef.current;
+      if (!node) return;
+      const atBottom = checkAtBottom(node);
+      setIsAtBottom(atBottom);
+      console.debug("post-toggle recheck", { atBottom, scrollTop: node.scrollTop, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight });
+    }, 40); // raise this to 100-200ms if you have CSS expand/collapse animations
+  }
+
+  // clicking a source should notify RightPanel to scroll & blink
+  function handleClickSource(documentId) {
+    if (!documentId) return;
+    // dispatch event for right panel or global listener
+    window.dispatchEvent(new CustomEvent("documents:scrollTo", { detail: { documentId } }));
+    // also raise documents:highlight event for blinking if you use that
+    window.dispatchEvent(new CustomEvent("documents:highlight", { detail: { documentId } }));
+  }
+
+  // render single-line pretty source for collapsed view
+  function renderCollapsedSourceFirst(citation, idx) {
+    const title = citation.document_title || citation.document_id || "unknown";
+    return (
+      <button
+        className="chip"
+        onClick={() => handleClickSource(citation.document_id)}
+        style={{
+          display: "inline-block",
+          borderRadius: 18,
+          padding: "6px 10px",
+          background: "rgba(255,255,255,0.04)",
+          border: "1px solid rgba(255,255,255,0.06)",
+          cursor: "pointer",
+          fontSize: 13,
+          marginRight: 8,
+          color:"rgba(255, 255, 255, 1)"
+        }}
+        title={title}
+      >
+        {title.length > 36 ? (title.slice(0, 34) + "...") : title}
+      </button>
+    );
+  }
+
+  // render a one-line source row used in expanded view
+  function renderSourceRow(citation, i) {
+    const title = citation.document_title || citation.document_id || "unknown";
+    const snip = citation.snippet ? (citation.snippet.length > 120 ? citation.snippet.slice(0, 117) + "..." : citation.snippet) : "";
+    return (
+      <li key={i} style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <button onClick={() => handleClickSource(citation.document_id)} style={{ all: "unset", cursor: "pointer", fontWeight: 700 }}>
+            {title}
+          </button>
+        </div>
+        {snip ? <div style={{ marginTop: 6, color: "var(--muted)", fontSize: 13 }}>{snip}</div> : null}
+      </li>
+    );
+  }
+
   if (!project) return <div className="chat-empty">Pick a project to start.</div>;
   if (!docsPresent) return <div className="chat-empty">No documents uploaded yet. Upload docs in the right panel to start chat.</div>;
 
   return (
-    <div className="chat-panel" style={{ height: "100%", position: "relative", display: "flex", flexDirection: "column" }}>
+    <div className="chat-panel" style={{ height: "100%", position: "relative" }}>
       <div className="chat-header" style={{ padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
         <h3 className="h1" style={{ margin: 0 }}>{project.name}</h3>
         <button title="Edit project name" onClick={openEdit} style={{
@@ -218,65 +340,69 @@ export default function ChatPanel({ project, onProjectRename }) {
         </button>
       </div>
 
-      <div ref={messagesRef} className="chat-window" style={{ padding: 16, flex: 1 }}>
+      <div
+        ref={messagesRef}
+        className="chat-window"
+        style={{ padding: 16, overflowY: "auto", height: "calc(100% - 160px)" }}
+      >
         {messages.map((m, idx) => (
-          <div key={idx} className={`message ${m.role === 'user' ? 'user' : 'assistant'}`} style={{ marginBottom: 14 }}>
-            <div dangerouslySetInnerHTML={renderMessageHTML(m.text, m.citations || [])} />
+          <div key={keyForMessage(m, idx)} className={`message ${m.role === 'user' ? 'user' : 'assistant'}`} style={{ marginBottom: 20 }}>
+            <div dangerouslySetInnerHTML={{ __html: (m.text || "").replace(/\n/g, "<br/>") }} />
+
+            {/* citations / sources */}
             {m.citations && m.citations.length > 0 && (
-              <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
-                <strong>Sources:</strong>
-                <ul style={{ marginTop: 8 }}>
-                  {m.citations.map((c, i) => {
-                    const title = c.document_title || c.document_id || "source";
-                    const short = title.length > 60 ? title.slice(0, 56).trim() + "..." : title;
-                    return (
-                      <li key={i} style={{ marginBottom: 6 }}>
-                        <button
-                          className="chip-link"
-                          onClick={() => scrollToDocument(c.document_id)}
-                          style={{ background: "transparent", border: "none", padding: 0, color: "var(--text)", cursor: "pointer" }}
-                        >
-                          <strong>{short}</strong>
-                        </button>
-                        {c.snippet ? <div style={{ color: "var(--muted)", marginTop: 4 }}>{c.snippet.slice(0, 140)}{c.snippet.length>140?"...":""}</div> : null}
-                      </li>
-                    );
-                  })}
-                </ul>
+              <div style={{ marginTop: 12 }}>
+                <strong style={{ display: "block", color: "var(--muted)", marginBottom: 8 }}>Sources:</strong>
+
+                {/* collapsed view */}
+                {!isExpanded(m, idx) && (
+                  <div>
+                    {renderCollapsedSourceFirst(m.citations[0], idx)}
+                    {m.citations.length > 1 && (
+                      <button
+                        onClick={() => toggleExpand(m, idx)}
+                        style={{
+                          marginLeft: 6,
+                          background: "transparent",
+                          border: "none",
+                          color: "var(--muted)",
+                          cursor: "pointer",
+                          fontSize: 13
+                        }}
+                      >
+                        +{m.citations.length - 1} more
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* expanded view */}
+                {isExpanded(m, idx) && (
+                  <div>
+                    <ul style={{ paddingLeft: 20, marginTop: 4 }}>
+                      {m.citations.map((c, i) => renderSourceRow(c, i))}
+                    </ul>
+                    <div style={{ marginTop: 8 }}>
+                      <button className="btn ghost" onClick={() => toggleExpand(m, idx)}>Collapse</button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
         ))}
-
-        {sending && (
-          <div className="message assistant typing" style={{ opacity: 0.8 }}>
-            <div>...</div>
-          </div>
-        )}
       </div>
 
-      {(
+      {!isAtBottom && (
         <button
           onClick={goToBottom}
-          style={{
-            position: "absolute",
-            right: 24,
-            bottom: 84,
-            padding: "8px 12px",
-            background: "#10a37f",
-            borderRadius: 999,
-            border: "none",
-            cursor: "pointer",
-            color: "white",
-            fontSize: 12,
-            zIndex: 600
-          }}
+          style={{ position: "absolute", bottom: 100, left: "50%", transform: "translateX(-50%)", padding: "6px 12px", background: "#10a37f", borderRadius: 6, border: "none", cursor: "pointer", color: "white", fontSize: 12 }}
         >
-          ↓
+          ↓ Go to bottom
         </button>
       )}
 
-      <div className="chat-input-bar" style={{ padding: 12, display: "flex", gap: 8 }}>
+      <div className="chat-input-bar" style={{ padding: 12 }}>
         <input
           className="input"
           placeholder="Ask something..."
