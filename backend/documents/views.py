@@ -77,15 +77,17 @@ class UploadView(APIView):
         saved_path = default_storage.save(storage_path, uploaded_file)
 
         #   before creating doc, resolve project
+       # require project_id (we enforce per-project isolation)
         project_id = request.data.get("project_id") or request.query_params.get("project_id")
-        project = None
-        if project_id:
-            from projects.models import Project
-            try:
-                project = Project.objects.get(id=project_id)
-            except Project.DoesNotExist:
-                return Response({"detail":"project not found"}, status=status.HTTP_400_BAD_REQUEST)
-            
+        if not project_id:
+            return Response({"detail": "project_id is required for upload"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from projects.models import Project
+        try:
+            project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            return Response({"detail": "project not found"}, status=status.HTTP_400_BAD_REQUEST)
+                    
         # -------- Create Document entry --------
         doc = Document.objects.create(
             filename=uploaded_file.name,

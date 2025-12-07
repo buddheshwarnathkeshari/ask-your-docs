@@ -96,7 +96,6 @@ class ConversationCreateView(APIView):
 
         return Response({"id": str(conv.id)}, status=status.HTTP_201_CREATED)
 
-
 @method_decorator(csrf_exempt, name="dispatch")
 class ChatMessageView(APIView):
     permission_classes = [permissions.AllowAny]  # relax for local testing
@@ -119,6 +118,30 @@ class ChatMessageView(APIView):
 
             # save user message
             user_msg = Message.objects.create(conversation=conv, role="user", text=user_text)
+
+            # --- NEW: if conversation has a project but no documents, return friendly prompt ---
+            # This prevents the RAG pipeline from running when there's nothing to search.
+            if getattr(conv, "project", None):
+                try:
+                    # lazy import to avoid circulars
+                    from documents.models import Document
+                    docs_count = Document.objects.filter(project_id=str(conv.project.id), is_deleted=False).count()
+                except Exception:
+                    logger.exception("Failed to count documents for project %s", getattr(conv.project, "id", None))
+                    docs_count = 0
+
+                if docs_count == 0:
+                    # create assistant message and return immediately
+                    assistant_text = "Please add a document first to ask questions about this project."
+                    assistant_msg = Message.objects.create(
+                        conversation=conv,
+                        role="assistant",
+                        text=assistant_text,
+                        model=None
+                    )
+
+                    # no citations to persist
+                    return Response({"answer": assistant_msg.text, "citations": []})
 
             # call rag service
             answer_text, retrieved, meta = answer_query(conv, user_text, top_k=6)

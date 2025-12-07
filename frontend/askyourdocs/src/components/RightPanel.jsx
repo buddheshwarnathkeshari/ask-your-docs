@@ -37,8 +37,9 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
       const el = listRef.current && listRef.current.querySelector(`[data-docid="${documentId}"]`);
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
+        // restart blink animation if you have CSS for .blink
         el.classList.remove("blink");
-        // restart animation
+        // force reflow
         // eslint-disable-next-line no-unused-expressions
         el.offsetWidth;
         el.classList.add("blink");
@@ -53,25 +54,32 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     return () => window.removeEventListener("documents:scrollTo", handler);
   }, []);
 
+  // chosen file change
   const onFileChange = (e) => {
-    setSelectedFile(e.target.files?.[0] || null);
+    const f = e.target.files?.[0] || null;
+    setSelectedFile(f);
   };
 
+  // programmatic open (not required, keeps same UX)
   const openFilePicker = () => {
     if (fileInputRef.current) fileInputRef.current.click();
   };
 
+  // upload file (guard projectId)
   const doUpload = async () => {
     if (!selectedFile) return;
     setUploading(true);
     try {
       await uploadDocument(selectedFile, projectId);
+      // refresh list
       await fetchDocs();
+      // notify chat panel etc.
       window.dispatchEvent(new CustomEvent("documents:updated", { detail: { projectId } }));
     } catch (err) {
       console.error("Upload failed", err);
       alert(err.message || "Upload failed");
     } finally {
+      // reset input
       if (fileInputRef.current) fileInputRef.current.value = "";
       setSelectedFile(null);
       setUploading(false);
@@ -107,7 +115,6 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
       className="right-panel"
       style={{
         padding: 14,
-        // width: 300,
         minWidth: 260,
         boxSizing: "border-box",
         display: "flex",
@@ -119,23 +126,18 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
         Documents <span style={{ color: "#9aa", fontWeight: 500, marginLeft: 8 }}>({documents.length})</span>
       </h3>
 
-      {/* uploader row: custom picker (hidden native input) + Upload button */}
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".pdf,.txt,.docx"
-          onChange={onFileChange}
-          style={{
-            position: "absolute",
-            opacity: 0,
-            pointerEvents: "none",
-            width: 0,
-            height: 0,
-          }}
-        />
+      {/* hidden native file input (use label/button to open) */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.txt,.docx"
+        onChange={onFileChange}
+        style={{ display: "none" }}
+      />
 
-        {/* styled file display / choose button */}
+      {/* file chooser row */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        {/* styled chooser that triggers native file input */}
         <button
           type="button"
           onClick={openFilePicker}
@@ -154,35 +156,52 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
             textAlign: "left",
             fontSize: 13,
           }}
+          aria-label="Choose file to upload"
         >
-          <span style={{ color: selectedFile ? "#fff" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", flex: 1 }}>
-            {selectedFile ? shortName(selectedFile.name, 36) : "Choose file"}
+          <span
+            style={{
+              color: selectedFile ? "#fff" : "#bbb",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              display: "block",
+              flex: 1,
+            }}
+            title={selectedFile ? selectedFile.name : ""}
+          >
+            {selectedFile ? shortName(selectedFile.name, 20) : "Choose file"}
           </span>
-          <span style={{ marginLeft: 8, fontWeight: 700, color: "#9aa", fontSize: 13 }}>{selectedFile ? "Change" : "Browse"}</span>
+          <span style={{ marginLeft: 8, fontWeight: 700, color: "#9aa", fontSize: 13 }}>
+            {selectedFile ? "Change" : "Browse"}
+          </span>
         </button>
 
         <button
           onClick={doUpload}
-          disabled={!selectedFile || uploading}
+          disabled={!selectedFile || uploading || !projectId}
           style={{
-            background: selectedFile && !uploading ? "#16a085" : "rgba(16,160,140,0.18)",
+            background: selectedFile && !uploading && projectId ? "#16a085" : "rgba(16,160,140,0.18)",
             color: "white",
             border: "none",
             padding: "9px 12px",
             borderRadius: 8,
-            cursor: (!selectedFile || uploading) ? "not-allowed" : "pointer",
+            cursor: (!selectedFile || uploading || !projectId) ? "not-allowed" : "pointer",
             minWidth: 74,
             fontWeight: 700,
             fontSize: 13,
-            boxShadow: "none",
           }}
+          title={!projectId ? "Select or create a project first" : (selectedFile ? "" : "Choose file")}
         >
           {uploading ? "Uploading…" : "Upload"}
         </button>
       </div>
 
       <div style={{ color: "#aaa", fontSize: 13 }}>
-        {project ? <div>Project: <strong style={{ color: "inherit" }}>{project.name}</strong></div> : <div>All documents</div>}
+        {project ? (
+          <div>Project: <strong style={{ color: "inherit" }}>{project.name}</strong></div>
+        ) : (
+          <div>All documents</div>
+        )}
       </div>
 
       <div
@@ -220,9 +239,7 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
                 alignItems: "center",
                 border: (String(projectId) && String(d.project_id) === String(projectId)) ? "1px solid rgba(16,163,127,0.06)" : "1px solid rgba(255,255,255,0.02)",
               }}
-              onClick={() => {
-                if (typeof onDocumentSelect === "function") onDocumentSelect(d);
-              }}
+              onClick={() => { if (typeof onDocumentSelect === "function") onDocumentSelect(d); }}
             >
               <div style={{ display: "flex", flexDirection: "column", minWidth: 0, marginRight: 8 }}>
                 <div

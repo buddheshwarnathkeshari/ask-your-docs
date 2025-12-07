@@ -194,7 +194,7 @@ def answer_query(conversation, user_text, top_k=6, temperature=0.0, max_output_t
 
     # 2) search qdrant
     project_id = getattr(conversation, "project_id", None) or (getattr(conversation, "project", None) and str(conversation.project.id))
-    retrieved = search_vectors(emb, top_k=top_k)
+    retrieved = search_vectors(emb, top_k=top_k, project_id=project_id)
 
     # 3) load last N messages from conversation (if any)
     history_qs = conversation.messages.order_by("created_at").all() if hasattr(conversation, "messages") else []

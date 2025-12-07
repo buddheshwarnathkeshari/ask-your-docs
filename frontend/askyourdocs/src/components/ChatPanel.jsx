@@ -1,14 +1,15 @@
 // src/components/ChatPanel.jsx
 import React, { useEffect, useRef, useState, useLayoutEffect } from "react";
-import { createConversation, postMessage } from "../api";
+import { createConversation, postMessage, listDocuments } from "../api";
 import { updateProject } from "../api"; // optional direct import (or use parent callback)
 
 export default function ChatPanel({ project, onProjectRename }) {
   const [conv, setConv] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
-  const [docsPresent, setDocsPresent] = useState(false);
+  const [docsCount, setDocsCount] = useState(null); // null = unknown, 0 = none, >0 = have docs
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const [sending, setSending] = useState(false);
 
   // edit modal states
   const [editing, setEditing] = useState(false);
@@ -18,34 +19,64 @@ export default function ChatPanel({ project, onProjectRename }) {
 
   const messagesRef = useRef(null);
 
-  // helper: check documents using event-driven approach (RightPanel dispatches)
+  // fetch docs count for current project
+  async function refreshDocsCount(proj) {
+    if (!proj || !proj.id) {
+      setDocsCount(0);
+      return 0;
+    }
+    try {
+      const docs = await listDocuments(proj.id);
+      const n = Array.isArray(docs) ? docs.length : 0;
+      setDocsCount(n);
+      return n;
+    } catch (err) {
+      console.error("failed to load documents count", err);
+      // conservative approach: treat as 0 (so UI asks to add docs)
+      setDocsCount(0);
+      return 0;
+    }
+  }
+
+  // when RightPanel updates docs, it should dispatch documents:updated with detail.projectId
   useEffect(() => {
-    const handler = async (ev) => {
-      if (!project) return;
+    const handler = (ev) => {
       const pid = ev.detail?.projectId;
-      if (String(pid) !== String(project.id)) return;
-      await ensureConversation();
+      // if project is not set or event is global, refresh anyway for active project
+      if (!project || !project.id) return;
+      if (!pid || String(pid) === String(project.id)) {
+        refreshDocsCount(project);
+      }
     };
     window.addEventListener("documents:updated", handler);
     return () => window.removeEventListener("documents:updated", handler);
-  }, [project]);
+  }, [project && project.id]);
 
+  // create conversation + load any existing messages and docs count
   async function ensureConversation() {
-    if (!project) return;
+    if (!project || !project.id) return;
     try {
+      // Create or get conversation for this project (backend may return existing conv)
       const resp = await createConversation(project.id);
       if (resp && resp.id) {
         setConv({ id: resp.id });
-        if (Array.isArray(resp.messages) && resp.messages.length > 0) {
+        // backend may return messages array
+        if (Array.isArray(resp.messages) && resp.messages.length) {
           setMessages(resp.messages.map(m => ({ ...m })));
-          setDocsPresent(true);
         } else {
-          setDocsPresent(true);
           setMessages([]);
         }
+      } else {
+        setConv(null);
+        setMessages([]);
       }
     } catch (err) {
       console.error("ensureConversation failed", err);
+      setConv(null);
+      setMessages([]);
+    } finally {
+      // always refresh documents count after conversation load
+      await refreshDocsCount(project);
     }
   }
 
@@ -54,15 +85,18 @@ export default function ChatPanel({ project, onProjectRename }) {
     setMessages([]);
     setConv(null);
     setInput("");
-    setDocsPresent(false);
     setEditing(false);
     setEditName("");
     setExpandedMessages(new Set());
+    setDocsCount(null);
+    setSending(false);
+
     if (!project) return;
     ensureConversation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
 
-  // helper to compute if scroll is at bottom
+  // helper: check documents window scroll bottom
   function checkAtBottom(node, tolerance = 20) {
     if (!node) return true;
     const scrollTop = typeof node.scrollTop === "number" ? node.scrollTop : 0;
@@ -93,14 +127,13 @@ export default function ChatPanel({ project, onProjectRename }) {
     };
   }
 
-  // Robust single effect to attach scroll listener, resize observer, and window resize.
+  // attach scroll + resize observer for messagesRef to update isAtBottom
   useEffect(() => {
     let attached = false;
     let ro = null;
     let node = messagesRef.current;
     let intervalId = null;
 
-    // declare cleanup early so attach can overwrite it safely
     let cleanup = () => {
       if (intervalId) {
         clearInterval(intervalId);
@@ -117,28 +150,21 @@ export default function ChatPanel({ project, onProjectRename }) {
       const updateAtBottom = () => {
         const atBottom = checkAtBottom(node);
         setIsAtBottom(atBottom);
-        console.debug("updateAtBottom", { scrollTop: node.scrollTop, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight, atBottom });
       };
 
-      const onScroll = throttle(() => {
-        updateAtBottom();
-      }, 50);
-
+      const onScroll = throttle(() => updateAtBottom(), 50);
       node.addEventListener("scroll", onScroll, { passive: true });
       window.addEventListener("resize", updateAtBottom);
 
       if (typeof ResizeObserver !== "undefined") {
         ro = new ResizeObserver(() => {
-          // allow a frame for transitions/layout to settle
           requestAnimationFrame(() => updateAtBottom());
         });
         ro.observe(node);
       }
 
-      // initial check after next paint
       requestAnimationFrame(() => updateAtBottom());
 
-      // override cleanup to remove listeners when needed
       cleanup = () => {
         try { node.removeEventListener("scroll", onScroll); } catch (e) {}
         try { window.removeEventListener("resize", updateAtBottom); } catch (e) {}
@@ -153,7 +179,6 @@ export default function ChatPanel({ project, onProjectRename }) {
       };
     };
 
-    // If ref not ready, poll briefly until it exists (max 2s)
     if (!node) {
       const start = Date.now();
       intervalId = setInterval(() => {
@@ -168,22 +193,16 @@ export default function ChatPanel({ project, onProjectRename }) {
       attach();
     }
 
-    return () => {
-      cleanup();
-    };
-    // reattach when project changes (new chat window size/structure)
+    return () => cleanup();
   }, [project?.id]);
 
-  // Auto-scroll after messages update when the user is at bottom
-  // useLayoutEffect to avoid flicker (runs before paint)
+  // Auto-scroll after messages update if at bottom
   useLayoutEffect(() => {
     const node = messagesRef.current;
     if (!node) return;
     if (isAtBottom) {
-      // scroll to bottom
       node.scrollTop = node.scrollHeight;
     } else {
-      // re-evaluate and correct flag if needed
       const atBottom = checkAtBottom(node);
       if (atBottom) setIsAtBottom(true);
     }
@@ -193,15 +212,22 @@ export default function ChatPanel({ project, onProjectRename }) {
   async function send() {
     if (!input.trim()) return;
     if (!conv) { alert("No conversation created"); return; }
+    if (!docsCount || docsCount === 0) {
+      // defensive: don't allow send if no docs
+      setMessages(prev => [...prev, { role: "assistant", text: "Please add a document to this project before asking questions." }]);
+      return;
+    }
+    if (sending) return;
 
+    setSending(true);
     // optimistic user message
     setMessages(prev => [...prev, { role: "user", text: input }]);
+    const textToSend = input;
     setInput("");
-    // we want to auto-scroll for user messages
     setIsAtBottom(true);
 
     try {
-      const res = await postMessage(conv.id, input);
+      const res = await postMessage(conv.id, textToSend);
       if (res && res.answer) {
         setMessages(prev => [...prev, { role: "assistant", text: res.answer, citations: res.citations || [] }]);
       } else {
@@ -210,6 +236,8 @@ export default function ChatPanel({ project, onProjectRename }) {
     } catch (err) {
       console.error("send message error", err);
       setMessages(prev => [...prev, { role: "assistant", text: "Send failed" }]);
+    } finally {
+      setSending(false);
     }
   }
 
@@ -244,7 +272,6 @@ export default function ChatPanel({ project, onProjectRename }) {
 
   // Expand/collapse helpers
   function keyForMessage(m, idx) {
-    // use stable key: message id if available, otherwise created_at, else index
     return m.id || m.created_at || `idx_${idx}`;
   }
 
@@ -262,27 +289,22 @@ export default function ChatPanel({ project, onProjectRename }) {
       return nxt;
     });
 
-    // force a re-check after the DOM updates/layout settles
-    // small timeout gives the browser one render tick to apply layout changes
     setTimeout(() => {
       const node = messagesRef.current;
       if (!node) return;
       const atBottom = checkAtBottom(node);
       setIsAtBottom(atBottom);
-      console.debug("post-toggle recheck", { atBottom, scrollTop: node.scrollTop, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight });
-    }, 40); // raise this to 100-200ms if you have CSS expand/collapse animations
+    }, 40);
   }
 
   // clicking a source should notify RightPanel to scroll & blink
   function handleClickSource(documentId) {
     if (!documentId) return;
-    // dispatch event for right panel or global listener
     window.dispatchEvent(new CustomEvent("documents:scrollTo", { detail: { documentId } }));
-    // also raise documents:highlight event for blinking if you use that
     window.dispatchEvent(new CustomEvent("documents:highlight", { detail: { documentId } }));
   }
 
-  // render single-line pretty source for collapsed view
+  // render collapsed source chip
   function renderCollapsedSourceFirst(citation, idx) {
     const title = citation.document_title || citation.document_id || "unknown";
     return (
@@ -307,7 +329,6 @@ export default function ChatPanel({ project, onProjectRename }) {
     );
   }
 
-  // render a one-line source row used in expanded view
   function renderSourceRow(citation, i) {
     const title = citation.document_title || citation.document_id || "unknown";
     const snip = citation.snippet ? (citation.snippet.length > 120 ? citation.snippet.slice(0, 117) + "..." : citation.snippet) : "";
@@ -323,8 +344,14 @@ export default function ChatPanel({ project, onProjectRename }) {
     );
   }
 
+  // If no project selected, quick message
   if (!project) return <div className="chat-empty">Pick a project to start.</div>;
-  if (!docsPresent) return <div className="chat-empty">No documents uploaded yet. Upload docs in the right panel to start chat.</div>;
+
+  // If docsCount is known and zero, show explicit "please add doc" message and disable send
+  const hasDocs = docsCount && docsCount > 0;
+
+  // If conversation has no messages, show a centered hint block
+  const showEmptyHint = Array.isArray(messages) && messages.length === 0;
 
   return (
     <div className="chat-panel" style={{ height: "100%", position: "relative" }}>
@@ -345,6 +372,39 @@ export default function ChatPanel({ project, onProjectRename }) {
         className="chat-window"
         style={{ padding: 16, overflowY: "auto", height: "calc(100% - 160px)" }}
       >
+        {/* Empty hint when conversation has no messages */}
+        {showEmptyHint && (
+          <div style={{ display: "flex", justifyContent: "center", padding: "18px 12px 40px" }}>
+            <div style={{
+              maxWidth: 720,
+              width: "100%",
+              background: "var(--panel)",
+              borderRadius: 12,
+              padding: "18px 20px",
+              boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.02)",
+              color: "var(--muted)",
+              fontSize: 15,
+              lineHeight: "20px"
+            }}>
+              {docsCount === null && (
+                <div>Checking project documents…</div>
+              )}
+              {docsCount === 0 && (
+                <div>
+                  <strong>Please add a document first.</strong>
+                  <div style={{ marginTop: 8 }}>Upload a PDF or text file in the Documents panel on the right and then ask questions about it.</div>
+                </div>
+              )}
+              {docsCount > 0 && (
+                <div>
+                  <strong>You have {docsCount} document{docsCount > 1 ? "s" : ""} in this project.</strong>
+                  <div style={{ marginTop: 8 }}>Ask a question and I'll answer using those documents. Example: “What is the refund policy?”</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {messages.map((m, idx) => (
           <div key={keyForMessage(m, idx)} className={`message ${m.role === 'user' ? 'user' : 'assistant'}`} style={{ marginBottom: 20 }}>
             <div dangerouslySetInnerHTML={{ __html: (m.text || "").replace(/\n/g, "<br/>") }} />
@@ -402,16 +462,45 @@ export default function ChatPanel({ project, onProjectRename }) {
         </button>
       )}
 
-      <div className="chat-input-bar" style={{ padding: 12 }}>
+      <div className="chat-input-bar" style={{ padding: 12, display: "flex", gap: 8, alignItems: "center" }}>
         <input
           className="input"
-          placeholder="Ask something..."
+          placeholder={docsCount === 0 ? "Upload a document first to enable chat" : "Ask something..."}
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && send()}
+          onKeyDown={(e) => {
+            if ((e.key === 'Enter' || e.key === "NumpadEnter")) {
+              // prevent sending when no docs or currently sending
+              if (!hasDocs || sending) {
+                e.preventDefault();
+                return;
+              }
+              // prevent rapid double sends
+              if (sending) {
+                e.preventDefault();
+                return;
+              }
+              send();
+            }
+          }}
           aria-label="Chat input"
+          style={{ flex: 1 }}
+          disabled={!hasDocs || sending}
         />
-        <button className="btn" onClick={send}>Send</button>
+        <button
+          className="btn"
+          onClick={send}
+          disabled={!hasDocs || sending || !input.trim()}
+          aria-disabled={!hasDocs || sending || !input.trim()}
+          style={{
+            opacity: (!hasDocs || sending || !input.trim()) ? 0.6 : 1,
+            cursor: (!hasDocs || sending || !input.trim()) ? "not-allowed" : "pointer",
+            minWidth: 72,
+            height: 38,
+          }}
+        >
+          {sending ? "Sending…" : "Send"}
+        </button>
       </div>
 
       {editing && (

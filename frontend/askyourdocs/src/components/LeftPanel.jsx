@@ -6,7 +6,7 @@ import { createProject } from "../api";
  * LeftPanel
  * props:
  *  - projects: []
- *  - onCreate(project)  // optional async function
+ *  - onCreate(project)  // optional callback to notify parent after creation (receives created project)
  *  - onSelect(project)
  *  - activeProject
  *  - onDelete(project)  // async
@@ -18,21 +18,22 @@ export default function LeftPanel({ projects = [], onCreate, onSelect, activePro
 
   async function handleCreate(e) {
     e.preventDefault();
-    if (!name.trim()) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
     setCreating(true);
     try {
-      // prefer parent onCreate if provided (it may do API work and return project)
+      // Call API to create project
+      const created = await createProject(trimmed, "");
+      // notify parent with the created project object
       if (typeof onCreate === "function") {
-        const maybeProject = await onCreate({ name: name.trim(), description: "" });
-        setName("");
-        setCreating(false);
-        // parent handled creation
-        return;
+        try {
+          onCreate(created);
+        } catch (err) {
+          // parent callback should not break flow, but catch anyway
+          console.error("onCreate callback failed:", err);
+        }
       }
-      // fallback: call API directly
-      const p = await createProject(name.trim(), "");
       setName("");
-      if (typeof onCreate === "function") onCreate(p);
     } catch (err) {
       console.error("create project failed", err);
       alert(err.message || "Project creation failed");

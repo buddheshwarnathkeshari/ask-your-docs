@@ -32,6 +32,12 @@ def ingest_document_task(self, doc_id: str):
             doc.save(update_fields=["status"])
             return {"error": "no path in metadata"}
 
+        if not getattr(doc, "project", None):
+            # mark error and bail out - we require project for ingestion
+            doc.status = "error"
+            doc.save(update_fields=["status"])
+            return {"error": "document has no project; cannot ingest without project"}
+    
         # resolve storage path; default_storage saved path relative to MEDIA_ROOT
         from django.conf import settings
         full_path = os.path.join(settings.MEDIA_ROOT, path)
