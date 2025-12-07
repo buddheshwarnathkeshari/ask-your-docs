@@ -1,0 +1,15 @@
+Django
+djangorestframework
+psycopg2-binary
+celery[redis]==5.3.1
+qdrant-client==1.9.0
+requests
+python-dotenv
+PyMuPDF==1.22.0
+tqdm
+gunicorn
+redis
+spacy
+nltk
+tokenizers
+transformers
