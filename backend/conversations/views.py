@@ -56,7 +56,7 @@ class ChatMessageView(APIView):
                         document_id=p.get("document_id") or p.get("document"),
                         page=p.get("page"),
                         score=r.get("score"),
-                        snippet=(p.get("text") or p.get("chunk_text") or "")[:2000]
+                        snippet = (p.get("text") or p.get("chunk_text") or p.get("text_snippet") or "")[:2000]
                     )
                 except Exception:
                     logger.exception("Failed to save citation for payload: %s", p)

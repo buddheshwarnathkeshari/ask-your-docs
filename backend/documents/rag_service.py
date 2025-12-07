@@ -14,12 +14,13 @@ PROMPT_SYSTEM = (
 def build_context_snippets(retrieved):
     parts = []
     for idx, r in enumerate(retrieved, start=1):
-        p = r["payload"]
-        chunk_id = p.get("chunk_id") or p.get("id") or r["id"]
+        p = r.get("payload", {}) or {}
+        chunk_id = p.get("chunk_id") or p.get("id") or r.get("id")
         doc_id = p.get("document_id") or p.get("document")
         page = p.get("page")
-        text = p.get("text") or p.get("chunk_text") or ""
-        text = textwrap.shorten(text.strip().replace("\n"," "), width=1500, placeholder=" ...")
+        # prefer full text fields, fallback to short snippet
+        text = p.get("text") or p.get("chunk_text") or p.get("text_snippet") or ""
+        text = textwrap.shorten(text.strip().replace("\n", " "), width=1500, placeholder=" ...")
         parts.append(f"[{idx}] CHUNK_ID:{chunk_id} DOC:{doc_id} PAGE:{page}\n{text}")
     return "\n\n".join(parts)
 

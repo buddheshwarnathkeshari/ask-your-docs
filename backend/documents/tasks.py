@@ -68,9 +68,12 @@ def ingest_document_task(self, doc_id: str):
                 # payload: keep doc id, page, chunk_index and short snippet
                 payload = {
                     "document_id": str(doc.id),
+                    "chunk_id": point_id,   
                     "page": page_no,
                     "chunk_index": idx,
-                    "text_snippet": chunk[:800]
+                    "text": chunk,                    # full chunk text
+                    "chunk_text": chunk,              # alias some code might expect
+                    "text_snippet": chunk[:800]       # short preview for quick embeds / UI
                 }
                 to_upsert_ids.append(point_id)
                 # we'll fill vectors in batches below
