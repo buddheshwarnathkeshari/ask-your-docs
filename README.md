@@ -7,5 +7,3 @@
 
 http://localhost:6333/dashboard
 
-
-create dummy objects to add screenshots in github
