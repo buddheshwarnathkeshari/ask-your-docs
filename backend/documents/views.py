@@ -109,13 +109,28 @@ class DocumentDownloadView(APIView):
 
     def get(self, request, doc_id):
         doc = get_object_or_404(Document, id=doc_id)
-        # prefer a FileField attribute name e.g. "file" or "filepath"
-        file_field = getattr(doc, "file", None) or getattr(doc, "filepath", None) or None
-        if not file_field:
+
+        # 1) try a FileField-like attribute first (if you later add one)
+        file_field = getattr(doc, "file", None) or getattr(doc, "filepath", None)
+        if file_field:
+            try:
+                # If file_field is a FileField instance
+                path = getattr(file_field, "path", None) or str(file_field)
+                f = open(path, "rb")
+                return FileResponse(f, as_attachment=True, filename=doc.filename)
+            except Exception:
+                raise Http404
+
+        # 2) fallback: check metadata (your UploadView stores path in metadata["path"])
+        meta = getattr(doc, "metadata", {}) or {}
+        storage_path = meta.get("path")  # e.g. "uploads/foo.pdf"
+        if not storage_path:
             return Response({"detail": "No file available"}, status=404)
 
         try:
-            # If it's a FileField, file_field.path works; if it's a URL, redirect would be needed
-            return FileResponse(open(file_field.path, "rb"), as_attachment=True, filename=getattr(doc, "filename", f"{doc.id}.bin"))
-        except Exception as e:
-            raise Http404 from e
+            # default_storage.open works even for remote storages (S3) that don't expose file.path
+            f = default_storage.open(storage_path, "rb")
+            response = FileResponse(f, as_attachment=True, filename=doc.filename or f"{doc.id}")
+            return response
+        except Exception:
+            raise Http404

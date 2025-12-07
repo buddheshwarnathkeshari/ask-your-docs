@@ -204,7 +204,8 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
         )}
 
         {documents.map((d) => {
-          const downloadUrl = d.download_url || `/api/documents/${d.id}/download/`;
+          const API_BASE = process.env.REACT_APP_API_BASE || "";
+          const downloadUrl = d.download_url || `${API_BASE}/api/documents/${d.id}/download/`;
           return (
             <div
               key={d.id}
@@ -260,6 +261,8 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
                     borderRadius: 6,
                     fontSize: 14,
                   }}
+                  rel="noopener"
+                  target="_blank"
                   onClick={(e) => e.stopPropagation()}
                 >
                   ⬇
