@@ -30,23 +30,18 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     fetchDocs();
   }, [projectId]);
 
-  // listen for external scrollTo events (clicking chip)
   useEffect(() => {
     const handler = (ev) => {
       const { documentId } = ev.detail || {};
       if (!documentId) return;
-      // find element
       const el = listRef.current && listRef.current.querySelector(`[data-docid="${documentId}"]`);
       if (el) {
-        // smooth scroll into view within listRef
         el.scrollIntoView({ behavior: "smooth", block: "center" });
-        // add blink class (CSS animation 3 iterations)
-        el.classList.remove("blink"); // reset
-        // force reflow to restart animation
+        el.classList.remove("blink");
+        // restart animation
         // eslint-disable-next-line no-unused-expressions
         el.offsetWidth;
         el.classList.add("blink");
-        // cleanup after animationend
         const onEnd = () => {
           el.classList.remove("blink");
           el.removeEventListener("animationend", onEnd);
@@ -62,13 +57,16 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     setSelectedFile(e.target.files?.[0] || null);
   };
 
+  const openFilePicker = () => {
+    if (fileInputRef.current) fileInputRef.current.click();
+  };
+
   const doUpload = async () => {
     if (!selectedFile) return;
     setUploading(true);
     try {
       await uploadDocument(selectedFile, projectId);
       await fetchDocs();
-      // notify others
       window.dispatchEvent(new CustomEvent("documents:updated", { detail: { projectId } }));
     } catch (err) {
       console.error("Upload failed", err);
@@ -80,16 +78,14 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     }
   };
 
-  // delete flow (call prop or fallback to API delete endpoint)
   async function doDeleteDocument() {
     if (!confirmDelete) return;
     const doc = confirmDelete;
     setConfirmDelete(null);
     try {
-      // attempt to call API delete endpoint (assumes /api/documents/<id>/delete/ exists)
       const res = await fetch(`/api/documents/${doc.id}/delete/`, { method: "DELETE" });
       if (!res.ok) {
-        const data = await res.json().catch(()=>({}));
+        const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || "Delete failed");
       }
       await fetchDocs();
@@ -100,91 +96,198 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     }
   }
 
-  return (
-    <aside className="right-panel" style={{ padding: 20, width: 320 }}>
-      <h3 style={{ marginBottom: 12 }}>Documents ({documents.length})</h3>
+  // small helper for filename display (shorten long names)
+  const shortName = (name, max = 40) => {
+    if (!name) return "";
+    return name.length > max ? name.slice(0, max - 3) + "..." : name;
+  };
 
-      <div className="uploader" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+  return (
+    <aside
+      className="right-panel"
+      style={{
+        padding: 14,
+        // width: 300,
+        minWidth: 260,
+        boxSizing: "border-box",
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+      }}
+    >
+      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>
+        Documents <span style={{ color: "#9aa", fontWeight: 500, marginLeft: 8 }}>({documents.length})</span>
+      </h3>
+
+      {/* uploader row: custom picker (hidden native input) + Upload button */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <input
           ref={fileInputRef}
           type="file"
           accept=".pdf,.txt,.docx"
           onChange={onFileChange}
-          disabled={uploading}
-          style={{ flex: 1 }}
+          style={{
+            position: "absolute",
+            opacity: 0,
+            pointerEvents: "none",
+            width: 0,
+            height: 0,
+          }}
         />
+
+        {/* styled file display / choose button */}
+        <button
+          type="button"
+          onClick={openFilePicker}
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            padding: "9px 12px",
+            borderRadius: 8,
+            background: "transparent",
+            border: "1px solid rgba(255,255,255,0.04)",
+            color: "inherit",
+            cursor: "pointer",
+            textAlign: "left",
+            fontSize: 13,
+          }}
+        >
+          <span style={{ color: selectedFile ? "#fff" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", flex: 1 }}>
+            {selectedFile ? shortName(selectedFile.name, 36) : "Choose file"}
+          </span>
+          <span style={{ marginLeft: 8, fontWeight: 700, color: "#9aa", fontSize: 13 }}>{selectedFile ? "Change" : "Browse"}</span>
+        </button>
+
         <button
           onClick={doUpload}
           disabled={!selectedFile || uploading}
           style={{
-            background: "#16a085",
+            background: selectedFile && !uploading ? "#16a085" : "rgba(16,160,140,0.18)",
             color: "white",
             border: "none",
-            padding: "8px 12px",
+            padding: "9px 12px",
             borderRadius: 8,
             cursor: (!selectedFile || uploading) ? "not-allowed" : "pointer",
+            minWidth: 74,
+            fontWeight: 700,
+            fontSize: 13,
+            boxShadow: "none",
           }}
         >
           {uploading ? "Uploading…" : "Upload"}
         </button>
       </div>
 
-      <div style={{ marginBottom: 8, color: "#aaa", fontSize: 13 }}>
-        {project ? <div>Project: <strong>{project.name}</strong></div> : <div>All documents</div>}
+      <div style={{ color: "#aaa", fontSize: 13 }}>
+        {project ? <div>Project: <strong style={{ color: "inherit" }}>{project.name}</strong></div> : <div>All documents</div>}
       </div>
 
-      <div ref={listRef} className="documents-list" style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        maxHeight: "calc(100vh - 260px)",
-        overflowY: "auto",
-        paddingRight: 6
-      }}>
-        {loadingDocs && <div style={{ color: "#999" }}>Loading documents…</div>}
+      <div
+        ref={listRef}
+        className="documents-list"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+          maxHeight: "calc(100vh - 220px)",
+          overflowY: "auto",
+          paddingRight: 6,
+        }}
+      >
+        {loadingDocs && <div style={{ color: "#999", fontSize: 13 }}>Loading documents…</div>}
 
         {documents.length === 0 && !loadingDocs && (
-          <div style={{ color: "#999" }}>No documents uploaded yet.</div>
+          <div style={{ color: "#999", fontSize: 13 }}>No documents uploaded yet.</div>
         )}
 
         {documents.map((d) => {
-          // determine download URL: use server-provided download_url if available
           const downloadUrl = d.download_url || `/api/documents/${d.id}/download/`;
           return (
             <div
               key={d.id}
               data-docid={d.id}
               style={{
-                padding: "12px 14px",
+                padding: "10px 12px",
                 borderRadius: 10,
-                background: "#121212",
-                cursor: onDocumentSelect ? "pointer" : "default",
+                background: "#0f0f0f",
+                cursor: typeof onDocumentSelect === "function" ? "pointer" : "default",
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
-                border: (String(projectId) && String(d.project_id) === String(projectId)) ? "1px solid rgba(16,163,127,0.06)" : undefined
+                border: (String(projectId) && String(d.project_id) === String(projectId)) ? "1px solid rgba(16,163,127,0.06)" : "1px solid rgba(255,255,255,0.02)",
+              }}
+              onClick={() => {
+                if (typeof onDocumentSelect === "function") onDocumentSelect(d);
               }}
             >
-              <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 }}>{d.filename}</div>
-                <div style={{ fontSize: 12, color: "#999" }}>{(d.status || "unknown")} · {d.size ? `${d.size} bytes` : ""}</div>
+              <div style={{ display: "flex", flexDirection: "column", minWidth: 0, marginRight: 8 }}>
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: 14,
+                    lineHeight: "18px",
+                    color: "inherit",
+                    whiteSpace: "normal",
+                    wordBreak: "break-word",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    maxHeight: 40,
+                  }}
+                  title={d.filename}
+                >
+                  {d.filename}
+                </div>
+                <div style={{ fontSize: 12, color: "#999", marginTop: 6 }}>
+                  {(d.status || "unknown")} · {d.size ? `${d.size} bytes` : ""}
+                </div>
               </div>
 
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <a title="Download" href={downloadUrl} style={{ color: "#9aa", textDecoration: "none" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+                <a
+                  title="Download"
+                  href={downloadUrl}
+                  style={{
+                    color: "#bcd",
+                    textDecoration: "none",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 28,
+                    height: 28,
+                    borderRadius: 6,
+                    fontSize: 14,
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
                   ⬇
                 </a>
 
                 <button
                   title="Delete"
                   onClick={(e) => { e.stopPropagation(); setConfirmDelete(d); }}
-                  style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: 6 }}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "rgba(255,255,255,0.7)",
+                    cursor: "pointer",
+                    padding: 6,
+                    width: 28,
+                    height: 28,
+                    borderRadius: 6,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 13,
+                  }}
                 >
                   🗑
                 </button>
 
                 { (d.status || "").toLowerCase() === "done" && (
-                  <span style={{ fontSize: 12, color: "#8fd99e" }}>✓</span>
+                  <span style={{ fontSize: 13, color: "#8fd99e", minWidth: 18, textAlign: "center" }}>✓</span>
                 )}
               </div>
             </div>
@@ -204,7 +307,7 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
             <p>Are you sure you want to delete <strong>{confirmDelete.filename}</strong>?</p>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
               <button className="btn ghost" onClick={() => setConfirmDelete(null)}>Cancel</button>
-              <button className="btn" onClick={doDeleteDocument}>Delete</button>
+              <button className="btn delete-button" onClick={doDeleteDocument}>Delete</button>
             </div>
           </div>
         </div>
