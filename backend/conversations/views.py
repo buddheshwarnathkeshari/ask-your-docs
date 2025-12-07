@@ -3,6 +3,7 @@ import logging
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
+from django.utils import timezone
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -22,7 +23,33 @@ class ConversationCreateView(APIView):
         if project_id:
             from projects.models import Project
             project = Project.objects.filter(id=project_id).first()
+
+        # If project provided, reuse latest conversation for that project (persistence)
+        if project:
+            conv = Conversation.objects.filter(project=project).order_by("-created_at").first()
+            if conv:
+                # serialize messages for client to restore chat
+                msgs = [
+                    {"role": m.role, "text": m.text, "created_at": m.created_at.isoformat(), "model": m.model}
+                    for m in conv.messages.order_by("created_at").all()
+                ]
+                # update last_interacted_at
+                try:
+                    project.touch()
+                except Exception:
+                    logger.exception("Failed to touch project last_interacted_at")
+                return Response({"id": str(conv.id), "messages": msgs})
+
+        # else create new conversation
         conv = Conversation.objects.create(owner=request.user if request.user.is_authenticated else None, project=project)
+
+        # also touch project last_interacted_at
+        if project:
+            try:
+                project.touch()
+            except Exception:
+                logger.exception("Failed to touch project last_interacted_at")
+
         return Response({"id": str(conv.id)}, status=status.HTTP_201_CREATED)
 
 
@@ -61,10 +88,17 @@ class ChatMessageView(APIView):
                         document_id=p.get("document_id") or p.get("document"),
                         page=p.get("page"),
                         score=r.get("score"),
-                        snippet = (p.get("text") or p.get("chunk_text") or p.get("text_snippet") or "")[:2000]
+                        snippet=(p.get("text") or p.get("chunk_text") or p.get("text_snippet") or "")[:2000]
                     )
                 except Exception:
                     logger.exception("Failed to save citation for payload: %s", p)
+
+            # touch project last_interacted_at so it floats to top
+            try:
+                if getattr(conv, "project", None):
+                    conv.project.touch()
+            except Exception:
+                logger.exception("Failed to touch project last_interacted_at on message")
 
             citations = [
                 {
@@ -87,3 +121,47 @@ class ChatMessageView(APIView):
                 # include error string when DEBUG
                 return Response({"detail": "internal error", "error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             return Response({"detail": "internal error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+class ConversationMessagesView(APIView):
+    """
+    GET -> list messages for a conversation with citations.
+    Returns JSON array of message objects ordered oldest->newest:
+      [{ id, role, text, model, created_at, citations: [{chunk_id, document_id, page, score, snippet}, ...] }, ...]
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, conv_id):
+        try:
+            conv = get_object_or_404(Conversation, id=conv_id)
+            msgs_qs = Message.objects.filter(conversation=conv).order_by("created_at").all()
+
+            results = []
+            for m in msgs_qs:
+                # collect citations for this message (if any)
+                cits = []
+                for c in m.citations.all():
+                    cits.append({
+                        "chunk_id": str(c.chunk_id) if c.chunk_id else None,
+                        "document_id": str(c.document_id) if c.document_id else None,
+                        "page": c.page,
+                        "score": c.score,
+                        "snippet": c.snippet
+                    })
+
+                results.append({
+                    "id": str(m.id),
+                    "role": m.role,
+                    "text": m.text,
+                    "model": m.model,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                    "citations": cits
+                })
+
+            return Response(results)
+        except Exception as exc:
+            logger.exception("Error listing conversation messages")
+            if getattr(__import__("django.conf").conf.settings, "DEBUG", False):
+                return Response({"detail": "internal error", "error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"detail": "internal error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+

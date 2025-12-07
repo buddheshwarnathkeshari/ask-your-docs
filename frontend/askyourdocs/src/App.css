@@ -36,3 +36,5 @@
     transform: rotate(360deg);
   }
 }
+html, body, #root { height:100%; background:#050506; overscroll-behavior: contain; }
+body { background: linear-gradient(180deg,var(--bg),#040405); }

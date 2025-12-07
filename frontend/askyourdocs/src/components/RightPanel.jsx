@@ -1,65 +1,129 @@
 // src/components/RightPanel.jsx
-import React, { useEffect, useState } from "react";
-import { uploadDocument, listDocuments } from "../api";
+import React, { useEffect, useRef, useState } from "react";
+import { listDocuments, uploadDocument } from "../api";
 
-export default function RightPanel({ project, onUploadComplete }){
-  const [file, setFile] = useState(null);
-  const [docs, setDocs] = useState([]);
-  const [loading, setLoading] = useState(false);
+export default function RightPanel({ project, projectId: projectIdProp, onDocumentSelect }) {
+  const projectId = project?.id || projectIdProp || null;
 
-  useEffect(()=>{
-    if(project) fetchDocs();
-    else setDocs([]);
-  }, [project]);
+  const [documents, setDocuments] = useState([]);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+  const fileInputRef = useRef(null);
 
-  async function fetchDocs(){
-    if(!project) return;
-    setLoading(true);
-    const res = await listDocuments(project.id);
-    setDocs(res || []);
-    setLoading(false);
-  }
+  const fetchDocs = async () => {
+    setLoadingDocs(true);
+    try {
+      const docs = await listDocuments(projectId);
+      setDocuments(Array.isArray(docs) ? docs : []);
+      window.dispatchEvent(new CustomEvent("documents:updated", { detail: { projectId } }));
+    } catch (err) {
+      console.error("Failed to load documents", err);
+      setDocuments([]);
+    } finally {
+      setLoadingDocs(false);
+    }
+  };
 
-  async function handleUpload(e){
-    e.preventDefault();
-    if(!file || !project){ alert("Choose project and file"); return; }
-    const res = await uploadDocument(file, project.id);
-    console.log("upload res", res);
-    setFile(null);
+  useEffect(() => {
     fetchDocs();
-    if(onUploadComplete) onUploadComplete();
-  }
+  }, [projectId]);
+
+  const onFileChange = (e) => {
+    setSelectedFile(e.target.files?.[0] || null);
+  };
+
+  const doUpload = async () => {
+    if (!selectedFile) return;
+    setUploading(true);
+    try {
+      await uploadDocument(selectedFile, projectId);
+      await fetchDocs();
+    } catch (err) {
+      console.error("Upload failed", err);
+      alert("Upload failed: " + (err.message || err));
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setSelectedFile(null);
+      setUploading(false);
+    }
+  };
+
+  const docCount = documents.length;
 
   return (
-    <>
-      <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-        <h3 className="h1">Documents</h3>
+    <aside className="right" style={{ padding: 20 }}>
+      <h3 style={{ marginBottom: 12 }}>Documents {typeof docCount === "number" ? `(${docCount})` : ""}</h3>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.txt,.docx"
+          onChange={onFileChange}
+          disabled={uploading}
+          style={{ flex: 1 }}
+        />
+        <button
+          onClick={doUpload}
+          disabled={!selectedFile || uploading}
+          style={{
+            background: "#16a085",
+            color: "white",
+            border: "none",
+            padding: "8px 12px",
+            borderRadius: 8,
+            cursor: (!selectedFile || uploading) ? "not-allowed" : "pointer",
+            opacity: (!selectedFile || uploading) ? 0.6 : 1
+          }}
+        >
+          {uploading ? "Uploading…" : "Upload"}
+        </button>
       </div>
 
-      {!project && <div style={{color:"var(--muted)"}}>Select or create a project to upload documents.</div>}
+      <div style={{ marginBottom: 8, color: "#aaa", fontSize: 13 }}>
+        {/* removed project name display per request */}
+      </div>
 
-      {project && (
-        <>
-          <form onSubmit={handleUpload} style={{display:"flex", gap:8, marginTop:8}}>
-            <input type="file" onChange={e=>setFile(e.target.files[0])} />
-            <button className="btn" type="submit">Upload</button>
-          </form>
-
-          <div style={{marginTop:12}}>
-            {loading ? <div style={{color:"var(--muted)"}}>Loading...</div> :
-              docs.length === 0 ? <div style={{color:"var(--muted)"}}>No documents yet</div> :
-              <div className="docs">
-                {docs.map(d => (
-                  <div className="doc-item" key={d.id}>
-                    <div style={{fontSize:13, fontWeight:600}}>{d.filename}</div>
-                    <div style={{fontSize:12, color:"var(--muted)"}}>{d.status} • {d.size} bytes</div>
-                  </div>
-                ))}
+      <div className="documents-list" style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        maxHeight: "calc(100vh - 300px)",
+        overflowY: "auto",
+        paddingRight: 6
+      }}>
+        {loadingDocs && <div style={{ color: "#999" }}>Loading documents…</div>}
+        {documents.length === 0 && !loadingDocs && (
+          <div style={{ color: "#999" }}>No documents uploaded yet.</div>
+        )}
+        {documents.map((d) => (
+          <div
+            key={d.id}
+            onClick={() => onDocumentSelect && onDocumentSelect(d)}
+            style={{
+              padding: "12px 14px",
+              borderRadius: 10,
+              background: "#121212",
+              cursor: onDocumentSelect ? "pointer" : "default",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center"
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              <div style={{ fontWeight: 600 }}>{d.filename}</div>
+              <div style={{ fontSize: 12, color: "#999" }}>
+                {d.size ? `${d.size} bytes` : ""} {d.status ? ` · ${d.status}` : ""}
               </div>
-            }
+            </div>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 12, color: "#8fd99e" }}>✓</span>
+            </div>
           </div>
-        </>
-      )}
-    </>
+        ))}
+      </div>
+    </aside>
   );
 }
