@@ -171,9 +171,24 @@ export default function ChatPanel({ project, onProjectRename }) {
       </div>
 
       {!isAtBottom && (
-        <div style={{ position: "absolute", right: 380, bottom: 110 }}>
-          <button className="btn" onClick={goToBottom}>Go to bottom</button>
-        </div>
+        <button
+          onClick={goToBottom}
+          style={{
+            position: "absolute",
+            bottom: 100,
+            left: "50%",
+            transform: "translateX(-50%)",
+            padding: "6px 12px",
+            background: "#10a37f",
+            borderRadius: 6,
+            border: "none",
+            cursor: "pointer",
+            color: "white",
+            fontSize: 12
+          }}
+        >
+          ↓ Go to bottom
+        </button>
       )}
 
       <div className="chat-input-bar" style={{ padding: 12 }}>

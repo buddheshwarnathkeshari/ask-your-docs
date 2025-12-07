@@ -8,6 +8,7 @@ from .serializers import DocumentListSerializer
 from .serializers import UploadSerializer
 from .models import Document
 from .tasks import ingest_document_task   # <-- UPDATED
+from django.shortcuts import get_object_or_404
 
 import hashlib
 
@@ -20,7 +21,7 @@ class DocumentListView(APIView):
     permission_classes = [permissions.AllowAny]   # dev convenience; change later
 
     def get(self, request):
-        qs = Document.objects.all().order_by("-uploaded_at")
+        qs = Document.objects.filter(is_deleted=False).all().order_by("-uploaded_at")
         project_id = request.query_params.get("project_id")
         if project_id:
             # if your Document model has a FK to Project, use that instead.
@@ -30,6 +31,13 @@ class DocumentListView(APIView):
             # NOTE: above tries to support JSONField metadata — adjust if you store project differently.
         serializer = DocumentListSerializer(qs, many=True)
         return Response(serializer.data)
+
+class DocumentDeleteView(APIView):
+    def delete(self, request, doc_id):
+        doc = get_object_or_404(Document, id=doc_id)
+        doc.is_deleted = True
+        doc.save(update_fields=["is_deleted"])
+        return Response({"deleted": True})
 
 class UploadView(APIView):
     """

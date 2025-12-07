@@ -1,5 +1,6 @@
 # backend/projects/views.py
 from rest_framework.views import APIView
+from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from .models import Project
@@ -12,7 +13,7 @@ class ProjectListCreateView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        qs = Project.objects.order_by("-last_interacted_at", "-created_at").all()
+        qs = Project.objects.filter(is_deleted=False).order_by("-last_interacted_at", "-created_at").all()
         serializer = ProjectSerializer(qs, many=True)
         return Response(serializer.data)
 
@@ -24,6 +25,15 @@ class ProjectListCreateView(APIView):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class ProjectDeleteView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def delete(self, request, project_id):
+        p = get_object_or_404(Project, id=project_id)
+        p.is_deleted = True
+        p.save(update_fields=["is_deleted"])
+        return Response({"deleted": True})
 
 
 @method_decorator(csrf_exempt, name='dispatch')

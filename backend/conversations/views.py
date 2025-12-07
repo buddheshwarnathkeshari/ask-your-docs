@@ -60,6 +60,10 @@ class ChatMessageView(APIView):
     def post(self, request, conv_id):
         try:
             conv = get_object_or_404(Conversation, id=conv_id)
+            if conv.project:
+                from django.utils import timezone
+                conv.project.last_interacted_at = timezone.now()
+                conv.project.save(update_fields=["last_interacted_at"])
             user_text = (request.data.get("text") or "").strip()
             if not user_text:
                 return Response({"detail": "text required"}, status=status.HTTP_400_BAD_REQUEST)

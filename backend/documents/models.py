@@ -12,6 +12,7 @@ class Document(models.Model):
     size = models.BigIntegerField(null=True)
     metadata = models.JSONField(default=dict)
     project = models.ForeignKey(Project, null=True, blank=True, on_delete=models.CASCADE)  # new field
+    is_deleted = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.filename} ({self.id})"
