@@ -1,6 +1,7 @@
 from django.db import models
 import uuid
 from django.utils import timezone
+from projects.models import Project
 
 class Document(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -10,12 +11,15 @@ class Document(models.Model):
     status = models.CharField(max_length=32, default="pending")
     size = models.BigIntegerField(null=True)
     metadata = models.JSONField(default=dict)
+    project = models.ForeignKey(Project, null=True, blank=True, on_delete=models.CASCADE)  # new field
+
     def __str__(self):
         return f"{self.filename} ({self.id})"
 
 class DocumentChunk(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     document = models.ForeignKey("documents.Document", on_delete=models.CASCADE, related_name="chunks")
+    project = models.ForeignKey(Project, null=True, blank=True, on_delete=models.CASCADE)  # optional: duplicate for fast queries
     text = models.TextField()
     page = models.IntegerField(null=True, blank=True)
     chunk_index = models.IntegerField(default=0)

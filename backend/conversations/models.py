@@ -2,11 +2,13 @@
 import uuid
 from django.db import models
 from django.conf import settings
+from projects.models import Project
 
 class Conversation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=200, blank=True)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.CASCADE)
+    project = models.ForeignKey(Project, null=True, blank=True, on_delete=models.CASCADE)   # <- new
     created_at = models.DateTimeField(auto_now_add=True)
 
 class Message(models.Model):

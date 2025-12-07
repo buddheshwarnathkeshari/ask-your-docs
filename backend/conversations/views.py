@@ -17,7 +17,12 @@ class ConversationCreateView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        conv = Conversation.objects.create(owner=request.user if request.user.is_authenticated else None)
+        project_id = request.data.get("project_id")
+        project = None
+        if project_id:
+            from projects.models import Project
+            project = Project.objects.filter(id=project_id).first()
+        conv = Conversation.objects.create(owner=request.user if request.user.is_authenticated else None, project=project)
         return Response({"id": str(conv.id)}, status=status.HTTP_201_CREATED)
 
 

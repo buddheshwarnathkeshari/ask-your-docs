@@ -6,7 +6,7 @@ from .models import Project
 from .serializers import ProjectSerializer
 
 class ProjectListCreateView(APIView):
-    permission_classes = [permissions.IsAuthenticated]  # adjust as needed
+    permission_classes = [permissions.AllowAny]
 
     def get(self, request):
         qs = Project.objects.filter(owner=request.user) if request.user.is_authenticated else Project.objects.none()

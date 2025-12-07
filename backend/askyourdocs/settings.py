@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "documents", 
     "chat",
     "accounts",
+    "projects",
     "conversations"
 ]
 

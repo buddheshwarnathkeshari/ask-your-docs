@@ -47,6 +47,7 @@ def answer_query(conversation, user_text, top_k=6, temperature=0.0, max_output_t
     emb = gemini_embed_batch([user_text])[0]
 
     # 2) search qdrant
+    project_id = getattr(conversation, "project_id", None) or (getattr(conversation, "project", None) and str(conversation.project.id))
     retrieved = search_vectors(emb, top_k=top_k)
 
     # 3) load last N messages from conversation (if any)

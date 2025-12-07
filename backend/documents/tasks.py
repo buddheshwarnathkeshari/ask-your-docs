@@ -56,6 +56,7 @@ def ingest_document_task(self, doc_id: str):
                 chunk_obj = DocumentChunk.objects.create(
                     document=doc,
                     text=chunk,
+                    project=doc.project,   # new
                     page=page_no,
                     chunk_index=idx,
                     token_count=len(chunk.split()),
@@ -69,6 +70,7 @@ def ingest_document_task(self, doc_id: str):
                 payload = {
                     "document_id": str(doc.id),
                     "chunk_id": point_id,   
+                    "project_id": str(doc.project.id) if doc.project else None,
                     "page": page_no,
                     "chunk_index": idx,
                     "text": chunk,                    # full chunk text
