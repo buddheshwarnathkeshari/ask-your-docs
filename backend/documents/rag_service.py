@@ -87,7 +87,7 @@ def pretty_replace_sources(answer_text, retrieved):
             title_short = title[:36].rsplit(" ", 1)[0] + "..."
         else:
             title_short = title
-        return f"[{title_short} · page {page}]"
+        return f"[{title_short}]"
 
     return patt.sub(repl, answer_text)
 

@@ -9,6 +9,12 @@ from .serializers import UploadSerializer
 from .models import Document
 from .tasks import ingest_document_task   # <-- UPDATED
 from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404
+from django.http import FileResponse, Http404
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import permissions
+from .models import Document
 
 import hashlib
 
@@ -97,3 +103,19 @@ class UploadView(APIView):
             {"status": "queued", "id": str(doc.id)},
             status=status.HTTP_201_CREATED,
         )
+
+class DocumentDownloadView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, doc_id):
+        doc = get_object_or_404(Document, id=doc_id)
+        # prefer a FileField attribute name e.g. "file" or "filepath"
+        file_field = getattr(doc, "file", None) or getattr(doc, "filepath", None) or None
+        if not file_field:
+            return Response({"detail": "No file available"}, status=404)
+
+        try:
+            # If it's a FileField, file_field.path works; if it's a URL, redirect would be needed
+            return FileResponse(open(file_field.path, "rb"), as_attachment=True, filename=getattr(doc, "filename", f"{doc.id}.bin"))
+        except Exception as e:
+            raise Http404 from e

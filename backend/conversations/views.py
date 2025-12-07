@@ -1,4 +1,3 @@
-# backend/conversations/views.py
 import logging
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
@@ -16,72 +15,60 @@ logger = logging.getLogger(__name__)
 
 
 class ConversationCreateView(APIView):
-    """
-    POST /api/conversations/
-    Payload: { project_id: <uuid> } (optional)
-    Behavior:
-      - If project_id provided and a Conversation already exists for that project, reuse latest conversation
-        and return { id: conv_id, messages: [...] } where each message contains citations.
-      - Otherwise create a new Conversation and return { id: conv_id } (201).
-    """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         project_id = request.data.get("project_id")
         project = None
         if project_id:
-            try:
-                from projects.models import Project
-                project = Project.objects.filter(id=project_id).first()
-            except Exception:
-                logger.exception("Failed to load Project for id=%s", project_id)
-                project = None
+            from projects.models import Project
+            project = Project.objects.filter(id=project_id).first()
 
-        # If project provided, attempt to reuse latest conversation for that project
+        # If project provided, reuse latest conversation for that project (persistence)
         if project:
             conv = Conversation.objects.filter(project=project).order_by("-created_at").first()
             if conv:
-                # build message list including citations so frontend can rehydrate the chat
-                msgs_out = []
-                try:
-                    # prefetching not required but keep simple
-                    for m in conv.messages.order_by("created_at").all():
-                        msg_obj = {
-                            "id": str(m.id),
-                            "role": m.role,
-                            "text": m.text,
-                            "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,
-                            "model": getattr(m, "model", None),
-                            "citations": []
-                        }
-                        # include citations for assistant messages (if any)
-                        try:
-                            for c in m.citations.all():
-                                doc_title = None
-                                if c.document_id:
-                                    # lazy import Document to find human friendly name
-                                    from documents.models import Document
-                                    try:
-                                        d = Document.objects.filter(id=c.document_id).first()
-                                        if d:
-                                            doc_title = getattr(d, "filename", None) or getattr(d, "title", None) or str(d.id)
-                                    except Exception:
-                                        logger.exception("Failed to fetch document for citation: %s", c.document_id)
-                                msg_obj["citations"].append({
-                                    "chunk_id": c.chunk_id,
-                                    "document_id": c.document_id,
-                                    "document_title": doc_title or (str(c.document_id) if c.document_id else None),
-                                    "page": c.page,
-                                    "score": c.score,
-                                    "snippet": c.snippet,
-                                })
-                        except Exception:
-                            logger.exception("Failed to enumerate citations for message %s", getattr(m, "id", None))
-                        msgs_out.append(msg_obj)
-                except Exception:
-                    logger.exception("Failed to build messages payload for conversation %s", getattr(conv, "id", None))
+                # serialize messages + citations for client to restore chat UI
+                msgs = []
+                # build doc title map once to avoid DB hits in loop
+                doc_ids = set()
+                for m in conv.messages.order_by("created_at").all():
+                    for c in getattr(m, "citations").all():
+                        if c.document_id:
+                            doc_ids.add(str(c.document_id))
+                doc_title_map = {}
+                if doc_ids:
+                    try:
+                        from documents.models import Document
+                        docs = Document.objects.filter(id__in=list(doc_ids))
+                        for d in docs:
+                            doc_title_map[str(d.id)] = getattr(d, "filename", None) or getattr(d, "title", None) or str(d.id)
+                    except Exception:
+                        logger.exception("Failed to build doc title map for conversation create")
 
-                # update project's last_interacted_at so it floats to top
+                for m in conv.messages.order_by("created_at").all():
+                    msg_obj = {
+                        "id": str(m.id),
+                        "role": m.role,
+                        "text": m.text,
+                        "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,
+                        "model": getattr(m, "model", None),
+                        "citations": []
+                    }
+                    for c in getattr(m, "citations").all():
+                        doc_id_str = str(c.document_id) if c.document_id else None
+                        doc_title = doc_title_map.get(doc_id_str) if doc_id_str else None
+                        msg_obj["citations"].append({
+                            "chunk_id": c.chunk_id,
+                            "document_id": c.document_id,
+                            "document_title": doc_title or (str(c.document_id) if c.document_id else None),
+                            "page": c.page,
+                            "score": c.score,
+                            "snippet": c.snippet,
+                        })
+                    msgs.append(msg_obj)
+
+                # update last_interacted_at
                 try:
                     if hasattr(project, "touch") and callable(project.touch):
                         project.touch()
@@ -89,18 +76,14 @@ class ConversationCreateView(APIView):
                         project.last_interacted_at = timezone.now()
                         project.save(update_fields=["last_interacted_at"])
                 except Exception:
-                    logger.exception("Failed to touch project.last_interacted_at")
+                    logger.exception("Failed to touch project last_interacted_at")
 
-                return Response({"id": str(conv.id), "messages": msgs_out})
+                return Response({"id": str(conv.id), "messages": msgs})
 
-        # Otherwise create a new conversation
-        try:
-            conv = Conversation.objects.create(owner=request.user if request.user.is_authenticated else None, project=project)
-        except Exception as exc:
-            logger.exception("Failed to create conversation")
-            return Response({"detail": "failed to create conversation"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # else create new conversation
+        conv = Conversation.objects.create(owner=request.user if request.user.is_authenticated else None, project=project)
 
-        # touch project last_interacted_at if project available
+        # also touch project last_interacted_at
         if project:
             try:
                 if hasattr(project, "touch") and callable(project.touch):
@@ -109,19 +92,14 @@ class ConversationCreateView(APIView):
                     project.last_interacted_at = timezone.now()
                     project.save(update_fields=["last_interacted_at"])
             except Exception:
-                logger.exception("Failed to touch project.last_interacted_at after conversation create")
+                logger.exception("Failed to touch project last_interacted_at")
 
         return Response({"id": str(conv.id)}, status=status.HTTP_201_CREATED)
 
 
 @method_decorator(csrf_exempt, name="dispatch")
 class ChatMessageView(APIView):
-    """
-    POST /api/conversations/<conv_id>/message/
-    Body: { text: "..." }
-    Returns: { answer: "...", citations: [...] }
-    """
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.AllowAny]  # relax for local testing
 
     def post(self, request, conv_id):
         try:
@@ -130,11 +108,8 @@ class ChatMessageView(APIView):
             # touch project early so UI sorts it to top quickly
             if conv.project:
                 try:
-                    if hasattr(conv.project, "touch") and callable(conv.project.touch):
-                        conv.project.touch()
-                    else:
-                        conv.project.last_interacted_at = timezone.now()
-                        conv.project.save(update_fields=["last_interacted_at"])
+                    conv.project.last_interacted_at = timezone.now()
+                    conv.project.save(update_fields=["last_interacted_at"])
                 except Exception:
                     logger.exception("Failed to update project.last_interacted_at (early)")
 
@@ -156,7 +131,7 @@ class ChatMessageView(APIView):
                 model=meta.get("model")
             )
 
-            # persist citations (retrieved is the vector search payload)
+            # persist citations (defensive). retrieved is the list returned by the vector search (payloads).
             for r in retrieved:
                 p = r.get("payload", {}) or {}
                 try:
@@ -180,7 +155,7 @@ class ChatMessageView(APIView):
                         conv.project.last_interacted_at = timezone.now()
                         conv.project.save(update_fields=["last_interacted_at"])
             except Exception:
-                logger.exception("Failed to touch project.last_interacted_at on message")
+                logger.exception("Failed to touch project last_interacted_at on message")
 
             # Build a mapping of document_id -> human-friendly title (if available)
             doc_ids = []
@@ -215,9 +190,12 @@ class ChatMessageView(APIView):
                 })
 
             return Response({"answer": assistant_msg.text, "citations": citations})
+
         except Exception as exc:
+            # log full traceback server-side and return JSON
             logger.exception("Error in ChatMessageView")
             if getattr(__import__("django.conf").conf.settings, "DEBUG", False):
+                # include error string when DEBUG
                 return Response({"detail": "internal error", "error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             return Response({"detail": "internal error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

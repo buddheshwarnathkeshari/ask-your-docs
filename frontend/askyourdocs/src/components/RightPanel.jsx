@@ -1,14 +1,7 @@
 // src/components/RightPanel.jsx
 import React, { useEffect, useRef, useState } from "react";
-import { listDocuments, uploadDocument, deleteDocument } from "../api";
+import { listDocuments, uploadDocument } from "../api";
 
-/**
- * RightPanel
- * props:
- *  - project
- *  - projectId (optional)
- *  - onDocumentSelect(doc)
- */
 export default function RightPanel({ project, projectId: projectIdProp, onDocumentSelect }) {
   const projectId = project?.id || projectIdProp || null;
 
@@ -16,15 +9,15 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [loadingDocs, setLoadingDocs] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(null); // document to delete
+  const [confirmDelete, setConfirmDelete] = useState(null);
   const fileInputRef = useRef(null);
+  const listRef = useRef(null);
 
   const fetchDocs = async () => {
     setLoadingDocs(true);
     try {
       const docs = await listDocuments(projectId);
-      // filter out soft-deleted items if backend returns is_deleted flag
-      setDocuments(Array.isArray(docs) ? docs.filter(d => !d.is_deleted) : []);
+      setDocuments(Array.isArray(docs) ? docs : []);
     } catch (err) {
       console.error("Failed to load documents", err);
       setDocuments([]);
@@ -37,14 +30,33 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     fetchDocs();
   }, [projectId]);
 
+  // listen for external scrollTo events (clicking chip)
   useEffect(() => {
     const handler = (ev) => {
-      const pid = ev.detail && ev.detail.projectId;
-      if (!pid || String(pid) === String(projectId)) fetchDocs();
+      const { documentId } = ev.detail || {};
+      if (!documentId) return;
+      // find element
+      const el = listRef.current && listRef.current.querySelector(`[data-docid="${documentId}"]`);
+      if (el) {
+        // smooth scroll into view within listRef
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        // add blink class (CSS animation 3 iterations)
+        el.classList.remove("blink"); // reset
+        // force reflow to restart animation
+        // eslint-disable-next-line no-unused-expressions
+        el.offsetWidth;
+        el.classList.add("blink");
+        // cleanup after animationend
+        const onEnd = () => {
+          el.classList.remove("blink");
+          el.removeEventListener("animationend", onEnd);
+        };
+        el.addEventListener("animationend", onEnd);
+      }
     };
-    window.addEventListener("documents:updated", handler);
-    return () => window.removeEventListener("documents:updated", handler);
-  }, [projectId]);
+    window.addEventListener("documents:scrollTo", handler);
+    return () => window.removeEventListener("documents:scrollTo", handler);
+  }, []);
 
   const onFileChange = (e) => {
     setSelectedFile(e.target.files?.[0] || null);
@@ -56,7 +68,7 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     try {
       await uploadDocument(selectedFile, projectId);
       await fetchDocs();
-      // notify other components (ChatPanel) to create conversation if needed
+      // notify others
       window.dispatchEvent(new CustomEvent("documents:updated", { detail: { projectId } }));
     } catch (err) {
       console.error("Upload failed", err);
@@ -68,17 +80,18 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     }
   };
 
-  function askDeleteDocument(doc, e) {
-    if (e) e.stopPropagation();
-    setConfirmDelete(doc);
-  }
-
+  // delete flow (call prop or fallback to API delete endpoint)
   async function doDeleteDocument() {
     if (!confirmDelete) return;
     const doc = confirmDelete;
     setConfirmDelete(null);
     try {
-      await deleteDocument(doc.id);
+      // attempt to call API delete endpoint (assumes /api/documents/<id>/delete/ exists)
+      const res = await fetch(`/api/documents/${doc.id}/delete/`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(()=>({}));
+        throw new Error(data.detail || "Delete failed");
+      }
       await fetchDocs();
       window.dispatchEvent(new CustomEvent("documents:updated", { detail: { projectId } }));
     } catch (err) {
@@ -87,13 +100,11 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     }
   }
 
-  const docCount = documents.length;
-
   return (
     <aside className="right-panel" style={{ padding: 20, width: 320 }}>
-      <h3 style={{ margin: 0 }}>Documents {`(${docCount})`}</h3>
+      <h3 style={{ marginBottom: 12 }}>Documents ({documents.length})</h3>
 
-      <div className="uploader" style={{ display: "flex", gap: 8, marginTop: 12, marginBottom: 12 }}>
+      <div className="uploader" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <input
           ref={fileInputRef}
           type="file"
@@ -118,7 +129,11 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
         </button>
       </div>
 
-      <div className="documents-list" style={{
+      <div style={{ marginBottom: 8, color: "#aaa", fontSize: 13 }}>
+        {project ? <div>Project: <strong>{project.name}</strong></div> : <div>All documents</div>}
+      </div>
+
+      <div ref={listRef} className="documents-list" style={{
         display: "flex",
         flexDirection: "column",
         gap: 8,
@@ -132,54 +147,55 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
           <div style={{ color: "#999" }}>No documents uploaded yet.</div>
         )}
 
-        {documents.map((d) => (
-          <div
-            key={d.id}
-            className="doc-item"
-            onClick={() => onDocumentSelect && onDocumentSelect(d)}
-            style={{
-              padding: "12px 14px",
-              borderRadius: 10,
-              background: "#121212",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 8,
-              minWidth: 0
-            }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="doc-title truncate" title={d.filename} style={{ fontWeight: 600 }}>{d.filename}</div>
-                </div>
-
-                {/* status + delete */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ color: (d.status || "").toLowerCase() === "done" ? "#8fd99e" : "#f0c36d", fontSize: 12 }}>
-                    {(d.status || "done") === "done" ? "✓" : d.status || "queued"}
-                  </span>
-
-                  <button
-                    title="Delete document"
-                    onClick={(e) => askDeleteDocument(d, e)}
-                    style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: 6 }}
-                    aria-label={`Delete document ${d.filename}`}
-                  >
-                    🗑
-                  </button>
-                </div>
+        {documents.map((d) => {
+          // determine download URL: use server-provided download_url if available
+          const downloadUrl = d.download_url || `/api/documents/${d.id}/download/`;
+          return (
+            <div
+              key={d.id}
+              data-docid={d.id}
+              style={{
+                padding: "12px 14px",
+                borderRadius: 10,
+                background: "#121212",
+                cursor: onDocumentSelect ? "pointer" : "default",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                border: (String(projectId) && String(d.project_id) === String(projectId)) ? "1px solid rgba(16,163,127,0.06)" : undefined
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 }}>{d.filename}</div>
+                <div style={{ fontSize: 12, color: "#999" }}>{(d.status || "unknown")} · {d.size ? `${d.size} bytes` : ""}</div>
               </div>
 
-              <div style={{ fontSize: 12, color: "#999", marginTop: 6 }}>{(d.status || "done")} · {d.size ? `${d.size} bytes` : ""}</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <a title="Download" href={downloadUrl} style={{ color: "#9aa", textDecoration: "none" }}>
+                  ⬇
+                </a>
+
+                <button
+                  title="Delete"
+                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(d); }}
+                  style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", padding: 6 }}
+                >
+                  🗑
+                </button>
+
+                { (d.status || "").toLowerCase() === "done" && (
+                  <span style={{ fontSize: 12, color: "#8fd99e" }}>✓</span>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {confirmDelete && (
         <div style={{
-          position: "fixed", left: 0, top: 0, right: 0, bottom: 0,
+          position: "fixed",
+          left: 0, top: 0, right: 0, bottom: 0,
           display: "flex", alignItems: "center", justifyContent: "center",
           background: "rgba(0,0,0,0.6)", zIndex: 1200
         }}>

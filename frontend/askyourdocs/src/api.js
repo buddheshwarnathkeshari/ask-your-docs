@@ -125,3 +125,8 @@ export async function updateProject(projectId, data = {}) {
   }
   return res.json();
 }
+
+export function downloadDocument(docId) {
+  // returns the download URL (frontend can set window.location or fetch)
+  return `/api/documents/${docId}/download/`;
+}

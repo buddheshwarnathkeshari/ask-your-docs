@@ -1,97 +1,43 @@
 // src/components/ChatPanel.jsx
 import React, { useEffect, useRef, useState } from "react";
 import { createConversation, postMessage } from "../api";
-import { updateProject } from "../api"; // optional direct import (or use parent callback)
+import { updateProject } from "../api"; // optional
 
-/**
- * ChatPanel
- *
- * - Loads (and rehydrates) conversation messages from GET /api/conversations/:id/messages/
- * - When sending a message: shows user message immediately, shows assistant "typing" bubble,
- *   then replaces typing bubble with the assistant response when the API returns.
- * - Auto-scrolls when at bottom; if user scrolls up, shows Go to bottom button.
- */
 export default function ChatPanel({ project, onProjectRename }) {
   const [conv, setConv] = useState(null);
-  const [messages, setMessages] = useState([]); // { role, text, citations?, loading? }
+  const [messages, setMessages] = useState([]); // messages from server or optimistic
   const [input, setInput] = useState("");
   const [docsPresent, setDocsPresent] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const [awaitingResponse, setAwaitingResponse] = useState(false);
-
-  // edit modal states
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
+  const [sending, setSending] = useState(false); // used to show typing placeholder
 
   const messagesRef = useRef(null);
 
-  // --- helper: fetch messages from the messages API and set state (preserves citations) ---
-  async function fetchConversationMessages(convId) {
-    if (!convId) return;
-    try {
-      const res = await fetch(`/api/conversations/${convId}/messages/`);
-      if (!res.ok) {
-        console.warn("Failed to fetch conversation messages", await res.text());
-        return;
-      }
-      const data = await res.json();
-      // normalize messages: backend returns { role, text, created_at, citations: [] }
-      setMessages((data || []).map(m => ({
-        role: m.role,
-        text: m.text,
-        citations: Array.isArray(m.citations) ? m.citations : [],
-        created_at: m.created_at || null
-      })));
-      setDocsPresent(true);
-    } catch (err) {
-      console.error("fetchConversationMessages error", err);
-    }
-  }
-
-  // --- ensureConversation: create OR reuse conversation and then fetch messages ---
+  // Create or reuse conversation for project
   async function ensureConversation() {
     if (!project) return;
     try {
-      // createConversation returns { id, messages? } in some implementations but be defensive
       const resp = await createConversation(project.id);
-      if (!resp || !resp.id) {
-        console.error("createConversation did not return id", resp);
-        return;
-      }
-      setConv({ id: resp.id });
-
-      // attempt to populate messages:
-      // 1) if createConversation returned messages array use that
-      if (Array.isArray(resp.messages) && resp.messages.length > 0) {
-        setMessages(resp.messages.map(m => ({
-          role: m.role,
-          text: m.text,
-          citations: m.citations || [],
-          created_at: m.created_at || null
-        })));
-        setDocsPresent(true);
-      } else {
-        // 2) otherwise fetch via messages endpoint (this ensures citations and persistence)
-        await fetchConversationMessages(resp.id);
+      if (resp && resp.id) {
+        setConv({ id: resp.id });
+        // server returns messages with citations (ConversationCreateView)
+        if (Array.isArray(resp.messages) && resp.messages.length > 0) {
+          setMessages(resp.messages);
+          setDocsPresent(true);
+        } else {
+          // no messages yet, but documents exist on server (we consider docsPresent true because createConversation succeeded for project)
+          setMessages([]);
+          setDocsPresent(true);
+        }
       }
     } catch (err) {
       console.error("ensureConversation failed", err);
     }
   }
 
-  // --- react to RightPanel dispatches (documents:updated) to create conversation if docs added ---
-  useEffect(() => {
-    const handler = async (ev) => {
-      if (!project) return;
-      const pid = ev.detail?.projectId;
-      if (String(pid) !== String(project.id)) return;
-      await ensureConversation();
-    };
-    window.addEventListener("documents:updated", handler);
-    return () => window.removeEventListener("documents:updated", handler);
-  }, [project]);
-
-  // --- when project changes: reset UI and ensure conversation (which will fetch messages) ---
+  // initial whenever project changes
   useEffect(() => {
     setMessages([]);
     setConv(null);
@@ -99,22 +45,32 @@ export default function ChatPanel({ project, onProjectRename }) {
     setDocsPresent(false);
     setEditing(false);
     setEditName("");
-    setAwaitingResponse(false);
+    setSending(false);
     if (!project) return;
     ensureConversation();
   }, [project?.id]);
 
-  // --- scroll handling: auto-scroll only if user at bottom; track user's scroll to show go-to-bottom button ---
+  // listen to docs updated events from RightPanel (upload / delete)
+  useEffect(() => {
+    const handler = async (ev) => {
+      if (!project) return;
+      const pid = ev.detail?.projectId;
+      if (String(pid) !== String(project.id)) return;
+      // re-create / reuse conversation to make sure messages/citations restored
+      await ensureConversation();
+    };
+    window.addEventListener("documents:updated", handler);
+    return () => window.removeEventListener("documents:updated", handler);
+  }, [project]);
+
+  // auto-scroll when messages change but only if user is at bottom
   useEffect(() => {
     const node = messagesRef.current;
     if (!node) return;
-    // auto-scroll when messages change if user is at bottom
-    if (isAtBottom) {
-      // small timeout to allow DOM to render new message nodes
-      setTimeout(() => { node.scrollTop = node.scrollHeight; }, 30);
-    }
+    if (isAtBottom) node.scrollTop = node.scrollHeight;
   }, [messages, isAtBottom]);
 
+  // track scroll to show "go to bottom"
   useEffect(() => {
     const node = messagesRef.current;
     if (!node) return;
@@ -123,60 +79,98 @@ export default function ChatPanel({ project, onProjectRename }) {
       const atBottom = (node.scrollHeight - node.scrollTop - node.clientHeight) <= tolerance;
       setIsAtBottom(atBottom);
     };
-    node.addEventListener("scroll", onScroll, { passive: true });
-    // initial check
+    node.addEventListener("scroll", onScroll);
     onScroll();
     return () => node.removeEventListener("scroll", onScroll);
   }, []);
 
-  // --- sending a message ---
+  // helper to dispatch scroll event to RightPanel
+  function scrollToDocument(docId) {
+    window.dispatchEvent(new CustomEvent("documents:scrollTo", { detail: { documentId: docId } }));
+  }
+
+  // render message text + inline chips
+  function renderMessageHTML(text, citations = []) {
+    // We want inline chips for referenced documents. The backend's pretty_replace_sources might have
+    // inserted readable titles in square brackets. But to be robust, we'll insert chips by scanning
+    // for each citation.document_title and replacing the first occurrence with a chip.
+    let html = text || "";
+    if (!citations || citations.length === 0) return { __html: html.replace(/\n/g, "<br/>") };
+
+    for (const c of citations) {
+      const title = c.document_title || c.document_id || "source";
+      const short = title.length > 60 ? title.slice(0, 56).trim() + "..." : title;
+      // escape for regexp
+      const esc = short.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const patt = new RegExp(esc);
+      // only replace first occurrence
+      if (patt.test(html)) {
+        // insert a clickable span with data-docid for mapping
+        const span = `<span class="source-chip" data-docid="${c.document_id}">${short}</span>`;
+        html = html.replace(patt, span);
+      } else {
+        // fallback: try to replace the document_title if it's longer than short (non-truncated)
+        const fullEsc = (c.document_title || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (fullEsc && new RegExp(fullEsc).test(html)) {
+          html = html.replace(new RegExp(fullEsc), `<span class="source-chip" data-docid="${c.document_id}">${short}</span>`);
+        }
+      }
+    }
+
+    // convert newlines to <br/>
+    html = html.replace(/\n/g, "<br/>");
+
+    return { __html: html };
+  }
+
+  // attach click handler for inline chips (delegation)
+  useEffect(() => {
+    const node = messagesRef.current;
+    if (!node) return;
+    const onClick = (e) => {
+      const chip = e.target.closest && e.target.closest(".source-chip");
+      if (chip) {
+        const docId = chip.getAttribute("data-docid");
+        if (docId) {
+          scrollToDocument(docId);
+        }
+      }
+    };
+    node.addEventListener("click", onClick);
+    return () => node.removeEventListener("click", onClick);
+  }, []);
+
+  // optimistic send: add user msg, show local typing bubble, then append assistant
   async function send() {
     if (!input.trim()) return;
-    if (!conv || !conv.id) { alert("No conversation created"); return; }
+    if (!conv) { alert("No conversation created"); return; }
 
     const text = input.trim();
-    // 1) optimistic add user message
-    setMessages(prev => [...prev, { role: "user", text }]);
+    // add user message
+    setMessages(prev => [...prev, { role: "user", text, created_at: new Date().toISOString() }]);
     setInput("");
     setIsAtBottom(true);
-
-    // 2) add an assistant "typing" placeholder (so UI shows typing)
-    const placeholder = { role: "assistant", text: "…", loading: true };
-    setMessages(prev => [...prev, placeholder]);
-    setAwaitingResponse(true);
+    setSending(true); // show typing
 
     try {
       const res = await postMessage(conv.id, text);
-      // remove the last placeholder and push actual assistant response
-      setMessages(prev => {
-        // remove the last placeholder (find last with loading: true)
-        const clone = [...prev];
-        const li = clone.map((m,i)=>({m,i})).reverse().find(x => x.m.loading);
-        if (li) clone.splice(li.m ? li.i : clone.length-1, 1); // remove placeholder
-        // append actual assistant message
-        const assistantMsg = {
-          role: "assistant",
-          text: (res && res.answer) ? res.answer : "No answer (error)",
-          citations: (res && res.citations) ? res.citations : []
-        };
-        return [...clone, assistantMsg];
-      });
+      // remove typing indicator (we show server assistant next)
+      setSending(false);
+      if (res && res.answer) {
+        setMessages(prev => [...prev, { role: "assistant", text: res.answer, citations: res.citations || [], created_at: new Date().toISOString() }]);
+      } else if (res && res.detail) {
+        setMessages(prev => [...prev, { role: "assistant", text: `Error: ${res.detail}`, created_at: new Date().toISOString() }]);
+      } else {
+        setMessages(prev => [...prev, { role: "assistant", text: "No answer (error)", created_at: new Date().toISOString() }]);
+      }
     } catch (err) {
       console.error("send message error", err);
-      // replace/remove placeholder with an error message
-      setMessages(prev => {
-        const clone = [...prev];
-        // remove last loading placeholder
-        const idx = clone.map(m=>m.loading ? 1 : 0).lastIndexOf(1);
-        if (idx >= 0) clone.splice(idx, 1);
-        clone.push({ role: "assistant", text: "Send failed" });
-        return clone;
-      });
-    } finally {
-      setAwaitingResponse(false);
+      setSending(false);
+      setMessages(prev => [...prev, { role: "assistant", text: "Send failed", created_at: new Date().toISOString() }]);
     }
   }
 
+  // go to bottom helper
   function goToBottom() {
     const node = messagesRef.current;
     if (!node) return;
@@ -184,7 +178,7 @@ export default function ChatPanel({ project, onProjectRename }) {
     setIsAtBottom(true);
   }
 
-  // --- edit modal handlers (unchanged) ---
+  // edit project name (modal)
   function openEdit() {
     setEditName(project?.name || "");
     setEditing(true);
@@ -206,33 +200,12 @@ export default function ChatPanel({ project, onProjectRename }) {
     }
   }
 
-  // --- simple render helpers for citations ---
-  function renderCitations(citations = []) {
-    if (!citations || citations.length === 0) return null;
-    return (
-      <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
-        <strong>Sources:</strong>
-        <ul>
-          {citations.map((c, i) => {
-            const title = c.document_title || c.document_id || "unknown";
-            const short = String(title).length > 60 ? String(title).slice(0, 56).trim() + "..." : title;
-            return (
-              <li key={i} style={{ marginTop: 6 }}>
-                <strong>{short}</strong>{c.page ? ` · page ${c.page}` : "" }
-                {c.snippet ? <div style={{ color: "var(--muted)", marginTop: 4 }}>{String(c.snippet).slice(0,140)}{String(c.snippet).length>140?"...":""}</div> : null}
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    );
-  }
-
+  // final UI
   if (!project) return <div className="chat-empty">Pick a project to start.</div>;
   if (!docsPresent) return <div className="chat-empty">No documents uploaded yet. Upload docs in the right panel to start chat.</div>;
 
   return (
-    <div className="chat-panel" style={{ height: "100%", position: "relative" }}>
+    <div className="chat-panel" style={{ height: "100%", position: "relative", display: "flex", flexDirection: "column" }}>
       <div className="chat-header" style={{ padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
         <h3 className="h1" style={{ margin: 0 }}>{project.name}</h3>
         <button title="Edit project name" onClick={openEdit} style={{
@@ -245,65 +218,65 @@ export default function ChatPanel({ project, onProjectRename }) {
         </button>
       </div>
 
-      <div ref={messagesRef} className="chat-window" style={{ padding: 16 }}>
+      <div ref={messagesRef} className="chat-window" style={{ padding: 16, flex: 1 }}>
         {messages.map((m, idx) => (
-          <div key={idx} className={`message ${m.role === 'user' ? 'user' : 'assistant'}`} style={{ opacity: m.loading ? 0.85 : 1 }}>
-            <div dangerouslySetInnerHTML={{ __html: (m.text || "").replace(/\n/g, "<br/>") }} />
+          <div key={idx} className={`message ${m.role === 'user' ? 'user' : 'assistant'}`} style={{ marginBottom: 14 }}>
+            <div dangerouslySetInnerHTML={renderMessageHTML(m.text, m.citations || [])} />
             {m.citations && m.citations.length > 0 && (
-  <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
-    <strong>Sources:</strong>
-    <ul style={{ listStyle: "disc", paddingLeft: 20 }}>
-      {m.citations.map((c, i) => {
-        const title = c.document_title || c.document_id || "unknown";
-        const shortTitle = title.length > 60 ? title.slice(0, 56) + "..." : title;
-
-        // Make snippet single-line, trimmed
-        const snippet = (c.snippet || "")
-          .replace(/\s+/g, " ")      // make snippet one line
-          .trim()
-          .slice(0, 80);            // truncate
-        const finalSnippet = snippet.length === 80 ? snippet + "..." : snippet;
-
-        return (
-          <li key={i} style={{ marginBottom: 4 }}>
-            <span style={{ fontWeight: 600 }}>{shortTitle}</span>
-            <br/>
-            {/* {c.page ? ` · page ${c.page}` : ""} */}
-            {finalSnippet ? ` · ${finalSnippet}` : ""}
-          </li>
-        );
-      })}
-    </ul>
-  </div>
-)}
-            {m.loading && <div style={{ marginTop:6, color:"var(--muted)", fontSize:12 }}>Thinking…</div>}
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>
+                <strong>Sources:</strong>
+                <ul style={{ marginTop: 8 }}>
+                  {m.citations.map((c, i) => {
+                    const title = c.document_title || c.document_id || "source";
+                    const short = title.length > 60 ? title.slice(0, 56).trim() + "..." : title;
+                    return (
+                      <li key={i} style={{ marginBottom: 6 }}>
+                        <button
+                          className="chip-link"
+                          onClick={() => scrollToDocument(c.document_id)}
+                          style={{ background: "transparent", border: "none", padding: 0, color: "var(--text)", cursor: "pointer" }}
+                        >
+                          <strong>{short}</strong>
+                        </button>
+                        {c.snippet ? <div style={{ color: "var(--muted)", marginTop: 4 }}>{c.snippet.slice(0, 140)}{c.snippet.length>140?"...":""}</div> : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
           </div>
         ))}
+
+        {sending && (
+          <div className="message assistant typing" style={{ opacity: 0.8 }}>
+            <div>...</div>
+          </div>
+        )}
       </div>
 
-      {!isAtBottom && (
+      {(
         <button
           onClick={goToBottom}
           style={{
             position: "absolute",
-            bottom: 90,
-            left: "50%",
-            transform: "translateX(-50%)",
-            padding: "6px 12px",
+            right: 24,
+            bottom: 84,
+            padding: "8px 12px",
             background: "#10a37f",
-            borderRadius: 6,
+            borderRadius: 999,
             border: "none",
             cursor: "pointer",
             color: "white",
             fontSize: 12,
-            zIndex: 30
+            zIndex: 600
           }}
         >
-          ↓ Go to bottom
+          ↓
         </button>
       )}
 
-      <div className="chat-input-bar" style={{ padding: 12 }}>
+      <div className="chat-input-bar" style={{ padding: 12, display: "flex", gap: 8 }}>
         <input
           className="input"
           placeholder="Ask something..."
@@ -312,7 +285,7 @@ export default function ChatPanel({ project, onProjectRename }) {
           onKeyDown={(e) => e.key === 'Enter' && send()}
           aria-label="Chat input"
         />
-        <button className="btn" onClick={send} disabled={!input.trim() || awaitingResponse}>Send</button>
+        <button className="btn" onClick={send}>Send</button>
       </div>
 
       {editing && (
