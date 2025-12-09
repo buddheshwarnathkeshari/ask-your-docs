@@ -3,114 +3,42 @@ from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
-
+from django.db import transaction 
+from rest_framework.generics import CreateAPIView
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
-
+from projects.models import Project
 from .models import Conversation, Message, MessageCitation
 from documents.rag_service import answer_query
-
+from .serializers import ConversationSerializer
 logger = logging.getLogger(__name__)
 
 
-class ConversationCreateView(APIView):
-    permission_classes = [permissions.AllowAny]
+class ConversationCreateView(CreateAPIView):
+    serializer_class = ConversationSerializer
 
-    def post(self, request):
-        project_id = request.data.get("project_id")
-        project = None
-        if project_id:
-            from projects.models import Project
-            project = Project.objects.filter(id=project_id).first()
+    @transaction.atomic
+    def perform_create(self, serializer):
+        conversation = serializer.save()
 
-        # If project provided, reuse latest conversation for that project (persistence)
-        if project:
-            conv = Conversation.objects.filter(project=project).order_by("-created_at").first()
-            if conv:
-                # serialize messages + citations for client to restore chat UI
-                msgs = []
-                # build doc title map once to avoid DB hits in loop
-                doc_ids = set()
-                for m in conv.messages.order_by("created_at").all():
-                    for c in getattr(m, "citations").all():
-                        if c.document_id:
-                            doc_ids.add(str(c.document_id))
-                doc_title_map = {}
-                if doc_ids:
-                    try:
-                        from documents.models import Document
-                        docs = Document.objects.filter(id__in=list(doc_ids))
-                        for d in docs:
-                            doc_title_map[str(d.id)] = getattr(d, "filename", None) or getattr(d, "title", None) or str(d.id)
-                    except Exception:
-                        logger.exception("Failed to build doc title map for conversation create")
-
-                for m in conv.messages.order_by("created_at").all():
-                    msg_obj = {
-                        "id": str(m.id),
-                        "role": m.role,
-                        "text": m.text,
-                        "created_at": m.created_at.isoformat() if getattr(m, "created_at", None) else None,
-                        "model": getattr(m, "model", None),
-                        "citations": []
-                    }
-                    for c in getattr(m, "citations").all():
-                        doc_id_str = str(c.document_id) if c.document_id else None
-                        doc_title = doc_title_map.get(doc_id_str) if doc_id_str else None
-                        msg_obj["citations"].append({
-                            "chunk_id": c.chunk_id,
-                            "document_id": c.document_id,
-                            "document_title": doc_title or (str(c.document_id) if c.document_id else None),
-                            "page": c.page,
-                            "score": c.score,
-                            "snippet": c.snippet,
-                        })
-                    msgs.append(msg_obj)
-
-                # update last_interacted_at
-                try:
-                    if hasattr(project, "touch") and callable(project.touch):
-                        project.touch()
-                    else:
-                        project.last_interacted_at = timezone.now()
-                        project.save(update_fields=["last_interacted_at"])
-                except Exception:
-                    logger.exception("Failed to touch project last_interacted_at")
-
-                return Response({"id": str(conv.id), "messages": msgs})
-
-        # else create new conversation
-        conv = Conversation.objects.create(owner=request.user if request.user.is_authenticated else None, project=project)
-
-        # also touch project last_interacted_at
-        if project:
-            try:
-                if hasattr(project, "touch") and callable(project.touch):
-                    project.touch()
-                else:
-                    project.last_interacted_at = timezone.now()
-                    project.save(update_fields=["last_interacted_at"])
-            except Exception:
-                logger.exception("Failed to touch project last_interacted_at")
-
-        return Response({"id": str(conv.id)}, status=status.HTTP_201_CREATED)
+        # Update the parent project's last interaction timestamp
+        Project.objects.filter(pk=conversation.project_id).update(
+            last_interacted_at=timezone.now()
+        )
 
 @method_decorator(csrf_exempt, name="dispatch")
 class ChatMessageView(APIView):
-    permission_classes = [permissions.AllowAny]  # relax for local testing
 
+    @transaction.atomic
     def post(self, request, conv_id):
         try:
             conv = get_object_or_404(Conversation, id=conv_id)
 
             # touch project early so UI sorts it to top quickly
-            if conv.project:
-                try:
-                    conv.project.last_interacted_at = timezone.now()
-                    conv.project.save(update_fields=["last_interacted_at"])
-                except Exception:
-                    logger.exception("Failed to update project.last_interacted_at (early)")
+            Project.objects.filter(pk=conv.project_id).update(
+                last_interacted_at=timezone.now()
+            )
 
             user_text = (request.data.get("text") or "").strip()
             if not user_text:
@@ -144,7 +72,24 @@ class ChatMessageView(APIView):
                     return Response({"answer": assistant_msg.text, "citations": []})
 
             # call rag service
-            answer_text, retrieved, meta = answer_query(conv, user_text, top_k=6)
+            try:
+                answer_text, retrieved, meta = answer_query(conv, user_text, top_k=6)
+            except Exception as exc:
+                # Detect Vertex/Gen AI resource exhausted response
+                msg_text = "The AI service is temporarily overloaded or out of quota. Please try again in a few moments."
+                logger.exception("RAG / LLM call failed: %s", exc)
+
+                # create assistant message so frontend shows friendly reply
+                assistant_msg = Message.objects.create(
+                    conversation=conv,
+                    role="assistant",
+                    text=msg_text,
+                    model=None
+                )
+
+                # respond with 503 Service Unavailable and a clear message + empty citations
+                return Response({"answer": assistant_msg.text, "citations": []},
+                                status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
             # save assistant message
             assistant_msg = Message.objects.create(
@@ -170,15 +115,9 @@ class ChatMessageView(APIView):
                     logger.exception("Failed to save citation for payload: %s", p)
 
             # touch project last_interacted_at so it floats to top (defensive)
-            try:
-                if getattr(conv, "project", None):
-                    if hasattr(conv.project, "touch") and callable(conv.project.touch):
-                        conv.project.touch()
-                    else:
-                        conv.project.last_interacted_at = timezone.now()
-                        conv.project.save(update_fields=["last_interacted_at"])
-            except Exception:
-                logger.exception("Failed to touch project last_interacted_at on message")
+            Project.objects.filter(pk=conv.project_id).update(
+                last_interacted_at=timezone.now()
+            )
 
             # Build a mapping of document_id -> human-friendly title (if available)
             doc_ids = []

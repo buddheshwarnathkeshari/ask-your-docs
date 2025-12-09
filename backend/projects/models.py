@@ -13,9 +13,10 @@ class Project(models.Model):
     last_interacted_at = models.DateTimeField(null=True, blank=True, default=timezone.now)
     is_deleted = models.BooleanField(default=False)
 
-    def touch(self):
-        self.last_interacted_at = timezone.now()
-        self.save(update_fields=["last_interacted_at"])
+    def update_last_interacted_at(self, last_interacted_at=timezone.now(), save=True):
+        self.last_interacted_at = last_interacted_at
+        if save:
+            self.save(update_fields=["last_interacted_at"])
 
     def __str__(self):
         return self.name

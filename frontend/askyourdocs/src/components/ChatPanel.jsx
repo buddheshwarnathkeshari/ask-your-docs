@@ -1,7 +1,7 @@
 // src/components/ChatPanel.jsx
 import React, { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { createConversation, postMessage, listDocuments } from "../api";
-import { updateProject } from "../api"; // optional direct import (or use parent callback)
+import { updateProject, listMessages } from "../api"; // optional direct import (or use parent callback)
 
 export default function ChatPanel({ project, onProjectRename }) {
   const [conv, setConv] = useState(null);
@@ -55,12 +55,30 @@ export default function ChatPanel({ project, onProjectRename }) {
   // create conversation + load any existing messages and docs count
   async function ensureConversation() {
     if (!project || !project.id) return;
+
     try {
-      // Create or get conversation for this project (backend may return existing conv)
+      // If the project object already contains conversations returned by the projects API,
+      // prefer the first conversation and avoid creating a new one.
+      const firstConv = project.conversations && project.conversations.length ? project.conversations[0] : null;
+      if (firstConv && firstConv.id) {
+        setConv({ id: firstConv.id });
+        // optionally load messages via listMessages if you want full history:
+        try {
+          const msgs = await listMessages(firstConv.id);
+          setMessages(Array.isArray(msgs) ? msgs : []);
+        } catch (err) {
+          // not fatal: keep messages empty
+          console.warn("Failed to load messages for existing conversation", err);
+          setMessages([]);
+        }
+        await refreshDocsCount(project);
+        return;
+      }
+
+      // No existing conversation present -> create one
       const resp = await createConversation(project.id);
       if (resp && resp.id) {
         setConv({ id: resp.id });
-        // backend may return messages array
         if (Array.isArray(resp.messages) && resp.messages.length) {
           setMessages(resp.messages.map(m => ({ ...m })));
         } else {
@@ -235,7 +253,7 @@ export default function ChatPanel({ project, onProjectRename }) {
       }
     } catch (err) {
       console.error("send message error", err);
-      setMessages(prev => [...prev, { role: "assistant", text: "Send failed" }]);
+      setMessages(prev => [...prev, { role: "assistant", text: "The AI service is temporarily overloaded or out of quota. Please try again in a few moments." }]);
     } finally {
       setSending(false);
     }

@@ -1,4 +1,3 @@
-// src/api.js
 const API_ROOT = "/api";
 
 // --- Projects ---
@@ -14,18 +13,25 @@ export async function createProject(name, description = "") {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, description }),
   });
-  if (!res.ok) throw new Error("Failed to create project");
+  if (!res.ok) {
+    let msg = "Failed to create project";
+    try {
+      const data = await res.json();
+      msg = data.detail || JSON.stringify(data);
+    } catch (e) {}
+    throw new Error(msg);
+  }
+  // backend returns created project object (including conversations)
   return res.json();
 }
 
-// Add this function:
+// Updated: delete at RESTful /projects/{id}/ with DELETE
 export async function deleteProject(projectId) {
   if (!projectId) throw new Error("projectId required");
-  const res = await fetch(`${API_ROOT}/projects/${projectId}/delete/`, {
+  const res = await fetch(`${API_ROOT}/projects/${projectId}/`, {
     method: "DELETE",
   });
 
-  // If backend returns JSON error, surface it nicely
   if (!res.ok) {
     let msg = `Failed to delete project (${res.status})`;
     try {
@@ -34,7 +40,9 @@ export async function deleteProject(projectId) {
     } catch (e) {}
     throw new Error(msg);
   }
-  return res.json();
+
+  // backend may return 204 No Content or a small JSON; normalize to true
+  return true;
 }
 
 // --- Documents ---
@@ -68,7 +76,6 @@ export async function listDocuments(projectId) {
 }
 
 export async function deleteDocument(docId) {
-  // backend expects DELETE at /api/documents/{id}/delete/ based on your URLconf screenshot
   const res = await fetch(`${API_ROOT}/documents/${docId}/delete/`, {
     method: "DELETE",
   });
@@ -85,7 +92,14 @@ export async function createConversation(projectId) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId }),
   });
-  if (!res.ok) throw new Error("Failed to create conversation");
+  if (!res.ok) {
+    let msg = "Failed to create conversation";
+    try {
+      const data = await res.json();
+      msg = data.detail || JSON.stringify(data);
+    } catch (e) {}
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -127,6 +141,5 @@ export async function updateProject(projectId, data = {}) {
 }
 
 export function downloadDocument(docId) {
-  // returns the download URL (frontend can set window.location or fetch)
   return `/api/documents/${docId}/download/`;
 }
