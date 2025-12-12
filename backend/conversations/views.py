@@ -66,7 +66,7 @@ class ChatMessageView(APIView):
 
             # call rag service
             try:
-                answer_text, retrieved, meta = answer_query(conv, user_text, top_k=6)
+                answer_text, retrieved, meta = answer_query(conv, user_text)
             except Exception as exc:
                 # Detect Vertex/Gen AI resource exhausted response
                 msg_text = "The AI service is temporarily overloaded or out of quota. Please try again in a few moments."

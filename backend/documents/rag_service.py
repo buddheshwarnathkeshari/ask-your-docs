@@ -183,7 +183,7 @@ def remove_inline_source_markers(answer_text, retrieved=None):
     return text.strip()
 
 
-def answer_query(conversation, user_text, top_k=6, temperature=0.0, max_output_tokens=300):
+def answer_query(conversation, user_text, top_k=100, temperature=0.0, max_output_tokens=300):
     """
     conversation: Conversation model instance (Django ORM)
     user_text: str
@@ -203,7 +203,7 @@ def answer_query(conversation, user_text, top_k=6, temperature=0.0, max_output_t
     prompt = make_prompt(history, retrieved, user_text)
 
     # 5) call LLM
-    answer_text, meta = call_gemini_chat(prompt, temperature=temperature, max_output_tokens=max_output_tokens)
+    answer_text, meta = "None", {} #call_gemini_chat(prompt, temperature=temperature, max_output_tokens=max_output_tokens)
 
     # 6) post-process for human-friendly source labels
     # try:

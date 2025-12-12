@@ -234,9 +234,21 @@ def _build_filter(project_id):
         ]
     }
 
-def _search_via_rest(query_embedding, top_k, qfilter):
+def _search_via_rest(query_embedding, top_k, qfilter, score_threshold: float = 0.6):
     """
     REST fallback to Qdrant /collections/<col>/points/search
+
+    Args:
+      query_embedding: list[float] the query vector
+      top_k: int limit
+      qfilter: dict|None payload filter
+      score_threshold: optional float — server-side score threshold to pass to Qdrant.
+                       Note: semantics depend on collection metric (higher is better for
+                       cosine/dot; for L2 distance a lower value is better). This function
+                       simply forwards the threshold to the server and also applies a
+                       defensive client-side >= comparison on the returned `score`.
+    Returns:
+      list of normalized items: {"id":..., "score":..., "payload": {...}} (filtered by score_threshold if provided)
     """
     url = QDRANT_URL.rstrip("/") + f"/collections/{COLLECTION}/points/search"
     payload = {
@@ -246,6 +258,14 @@ def _search_via_rest(query_embedding, top_k, qfilter):
     }
     if qfilter:
         payload["filter"] = qfilter
+
+    # forward score_threshold if provided (Qdrant REST supports this)
+    if score_threshold is not None:
+        try:
+            payload["score_threshold"] = float(score_threshold)
+        except Exception:
+            # ignore bad value but log
+            logger.debug("invalid score_threshold provided to _search_via_rest: %r", score_threshold)
 
     headers = {"Content-Type": "application/json"}
     if QDRANT_API_KEY:
@@ -257,19 +277,55 @@ def _search_via_rest(query_embedding, top_k, qfilter):
 
     pts = []
     if isinstance(body, dict):
+        # various qdrant response shapes across versions
         if "result" in body:
-            if isinstance(body["result"], dict) and "points" in body["result"]:
-                pts = body["result"]["points"]
-            elif isinstance(body["result"], list):
-                pts = body["result"]
+            result = body["result"]
+            if isinstance(result, dict) and "points" in result:
+                pts = result["points"]
+            elif isinstance(result, list):
+                pts = result
             else:
-                pts = body.get("result") or []
+                pts = result if isinstance(result, list) else []
         elif "points" in body:
             pts = body["points"]
     elif isinstance(body, list):
         pts = body
 
-    return [_normalize_result_item(p) for p in pts]
+    # normalize items first
+    normalized = [_normalize_result_item(p) for p in pts]
+
+    print("REST search returned", len(normalized), "items.")
+    print("QDRANT SEARCH via REST fallback succeeded10\n",'\n'.join([str({r['score']:r['payload']['text'][:100]}) for r in normalized]))
+
+
+    # defensive client-side filtering by score_threshold if provided
+    if score_threshold is not None:
+        try:
+            thr = float(score_threshold)
+            filtered = []
+            removed = 0
+            for item in normalized:
+                sc = item.get("score")
+                # if score missing, treat as not matching threshold
+                if sc is None:
+                    removed += 1
+                    continue
+                try:
+                    if float(sc) >= thr:
+                        filtered.append(item)
+                    else:
+                        removed += 1
+                except Exception:
+                    # if score is weird type, skip it
+                    removed += 1
+            if removed:
+                logger.debug("REST search: filtered out %d items below score_threshold=%s", removed, thr)
+            return filtered
+        except Exception:
+            logger.debug("Failed to apply score_threshold client-side, returning raw normalized results")
+
+    return normalized
+
 
 def _normalize_result_item(item):
     # keep your existing normalization logic (same as before)
@@ -346,7 +402,7 @@ def set_document_deleted(document_id: str, deleted: bool = True, project_id: str
 
     return True
 
-def search_vectors(query_embedding, top_k=6, project_id=None):
+def search_vectors(query_embedding, top_k=100, project_id=None):
     """
     Robust search that enforces exclusion of is_deleted points.
     Returns list of dicts {id, score, payload}.
@@ -355,73 +411,6 @@ def search_vectors(query_embedding, top_k=6, project_id=None):
     if not project_id:
         raise ValueError("project_id is required for search_vectors() — refusing cross-project search.")
 
-    qc = client()
     qfilter = _build_filter(project_id)
 
-    # Attempt modern client signature: query_filter
-    try:
-        resp = qc.search(
-            collection_name=COLLECTION,
-            query_vector=query_embedding,
-            limit=top_k,
-            with_payload=True,
-            with_vector=False,
-            query_filter=qfilter
-        )
-        results = [_normalize_result_item(r) for r in resp]
-    except TypeError as e_qf:
-        logger.debug("qc.search(query_filter=...) failed: %s", e_qf)
-        # try older client signature: filter
-        try:
-            resp = qc.search(
-                collection_name=COLLECTION,
-                query_vector=query_embedding,
-                limit=top_k,
-                with_payload=True,
-                with_vector=False,
-                filter=qfilter
-            )
-            results = [_normalize_result_item(r) for r in resp]
-        except TypeError as e_f:
-            logger.debug("qc.search(filter=...) failed: %s", e_f)
-            # try positional fallback
-            try:
-                resp = qc.search(COLLECTION, query_embedding, top=top_k, with_payload=True, filter=qfilter)
-                results = [_normalize_result_item(r) for r in resp]
-            except Exception as exc_pos:
-                logger.warning("qdrant python client search fallbacks failed, using REST fallback: %s", exc_pos)
-                try:
-                    results = _search_via_rest(query_embedding, top_k, qfilter)
-                except Exception as exc_rest:
-                    logger.exception("Qdrant REST search also failed: %s", exc_rest)
-                    raise
-    except AssertionError as ae:
-        # some client versions assert unknown kwargs; fallback to REST
-        logger.debug("qdrant client asserted unknown kwargs: %s", ae)
-        results = _search_via_rest(query_embedding, top_k, qfilter)
-    except Exception as exc:
-        # unknown error from client: log and try REST
-        logger.exception("Unexpected error calling qdrant-client.search: %s", exc)
-        results = _search_via_rest(query_embedding, top_k, qfilter)
-
-    # Defensive filtering: if any payloads still have is_deleted True, remove them
-    filtered = []
-    removed_count = 0
-    for r in results:
-        payload = r.get("payload") or {}
-        # payload might contain "is_deleted": "true" (string) or True (bool) — normalize
-        is_deleted = payload.get("is_deleted")
-        if isinstance(is_deleted, str):
-            # handle "true"/"false"
-            is_deleted_val = is_deleted.lower() in ("1", "true", "yes", "t")
-        else:
-            is_deleted_val = bool(is_deleted)
-        if is_deleted_val:
-            removed_count += 1
-            continue
-        filtered.append(r)
-
-    if removed_count:
-        logger.info("search_vectors: filtered out %d deleted qdrant points for project %s", removed_count, project_id)
-
-    return filtered
+    return _search_via_rest(query_embedding, top_k, qfilter)
