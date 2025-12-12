@@ -12,8 +12,8 @@ export default function App() {
 
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
   useEffect(()=> {
-    loadProjects();
     // if URL contains project_id, will be selected after projects load
+    loadProjects();
   }, []);
 
   async function loadProjects(){

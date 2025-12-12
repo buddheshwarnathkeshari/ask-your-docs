@@ -4,6 +4,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from django.db import transaction 
+from documents.models import Document
 from rest_framework.generics import CreateAPIView
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -27,7 +28,6 @@ class ConversationCreateView(CreateAPIView):
             last_interacted_at=timezone.now()
         )
 
-@method_decorator(csrf_exempt, name="dispatch")
 class ChatMessageView(APIView):
 
     @transaction.atomic
@@ -50,14 +50,7 @@ class ChatMessageView(APIView):
             # --- NEW: if conversation has a project but no documents, return friendly prompt ---
             # This prevents the RAG pipeline from running when there's nothing to search.
             if getattr(conv, "project", None):
-                try:
-                    # lazy import to avoid circulars
-                    from documents.models import Document
-                    docs_count = Document.objects.filter(project_id=str(conv.project.id), is_deleted=False).count()
-                except Exception:
-                    logger.exception("Failed to count documents for project %s", getattr(conv.project, "id", None))
-                    docs_count = 0
-
+                docs_count = Document.objects.filter(project_id=str(conv.project.id), is_deleted=False).count()
                 if docs_count == 0:
                     # create assistant message and return immediately
                     assistant_text = "Please add a document first to ask questions about this project."
@@ -87,9 +80,7 @@ class ChatMessageView(APIView):
                     model=None
                 )
 
-                # respond with 503 Service Unavailable and a clear message + empty citations
-                return Response({"answer": assistant_msg.text, "citations": []},
-                                status=status.HTTP_503_SERVICE_UNAVAILABLE)
+                return Response({"answer": assistant_msg.text, "citations": []})
 
             # save assistant message
             assistant_msg = Message.objects.create(
@@ -128,7 +119,6 @@ class ChatMessageView(APIView):
             doc_title_map = {}
             if doc_ids:
                 try:
-                    from documents.models import Document
                     docs = Document.objects.filter(id__in=doc_ids)
                     for d in docs:
                         doc_title_map[str(d.id)] = getattr(d, "filename", None) or getattr(d, "title", None) or str(d.id)
@@ -190,7 +180,6 @@ class ConversationMessagesView(APIView):
             doc_title_map = {}
             if doc_ids:
                 try:
-                    from documents.models import Document
                     docs = Document.objects.filter(id__in=list(doc_ids))
                     for d in docs:
                         doc_title_map[str(d.id)] = getattr(d, "filename", None) or getattr(d, "title", None) or str(d.id)

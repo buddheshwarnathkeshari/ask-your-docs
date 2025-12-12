@@ -1,138 +1,119 @@
-# documents/views.py
-from rest_framework.views import APIView
+from rest_framework import viewsets, status, permissions
+from documents.qdrant_search import set_document_deleted
+from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework import status, permissions
+from django.shortcuts import get_object_or_404
 from django.core.files.storage import default_storage
-from django.conf import settings
-from .serializers import DocumentListSerializer
-from .serializers import UploadSerializer
-from .models import Document
-from .tasks import ingest_document_task   # <-- UPDATED
-from django.shortcuts import get_object_or_404
-from django.shortcuts import get_object_or_404
 from django.http import FileResponse, Http404
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import permissions
-from .models import Document
-
+from django.db import transaction
 import hashlib
+import mimetypes
+
+from .models import Document
+from .serializers import DocumentListSerializer, UploadSerializer
+from projects.models import Project
+from .tasks import ingest_document_task
 
 
-class DocumentListView(APIView):
+class DocumentViewSet(viewsets.ViewSet):
     """
-    GET /api/documents/?project_id=<uuid>
-    Returns list of documents. If project_id provided, filters by project.
+    Supports:
+    GET     /documents/                → list
+    POST    /documents/                → upload
+    DELETE  /documents/<id>/           → soft delete
+    GET     /documents/<id>/download/  → download
     """
-    permission_classes = [permissions.AllowAny]   # dev convenience; change later
 
-    def get(self, request):
-        qs = Document.objects.filter(is_deleted=False).all().order_by("-uploaded_at")
+    permission_classes = [permissions.AllowAny]
+
+    def list(self, request):
         project_id = request.query_params.get("project_id")
+        qs = Document.objects.filter(is_deleted=False).order_by("-uploaded_at")
         if project_id:
-            # if your Document model has a FK to Project, use that instead.
-            # If you store project id in metadata, adapt accordingly.
-            # Example when Document has project FK: qs = qs.filter(project_id=project_id)
             qs = qs.filter(project_id=project_id)
-            # NOTE: above tries to support JSONField metadata — adjust if you store project differently.
         serializer = DocumentListSerializer(qs, many=True)
         return Response(serializer.data)
 
-class DocumentDeleteView(APIView):
-    def delete(self, request, doc_id):
-        doc = get_object_or_404(Document, id=doc_id)
-        doc.is_deleted = True
-        doc.save(update_fields=["is_deleted"])
-        return Response({"deleted": True})
-
-class UploadView(APIView):
-    """
-    Handles document upload:
-      1. Validates upload
-      2. Computes SHA-256 to ensure idempotency
-      3. Saves file to MEDIA_ROOT/uploads/
-      4. Creates Document record
-      5. Dispatches async ingestion task (Celery)
-    """
-
-    def post(self, request):
+    @transaction.atomic
+    def create(self, request):
         serializer = UploadSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
 
         uploaded_file = serializer.validated_data["file"]
+
+        # Validate project
+        project_id = request.data.get("project_id") or request.query_params.get("project_id")
+        project = get_object_or_404(Project, id=project_id)
+
+        # Compute sha256
         file_bytes = uploaded_file.read()
-
-        # -------- Idempotency using SHA-256 --------
         sha = hashlib.sha256(file_bytes).hexdigest()
-        # existing = Document.objects.filter(sha256=sha).first()
-        # if existing:
-        #     return Response(
-        #         {"status": "exists", "id": str(existing.id)},
-        #         status=status.HTTP_200_OK,
-        #     )
 
-        # -------- Save file to MEDIA_ROOT/uploads --------
+        # Duplicate detection
+        existing = Document.objects.filter(sha256=sha, project_id=project_id).first()
+        if existing:
+            # auto-restore if deleted
+            if existing.is_deleted:
+                existing.is_deleted = False
+                existing.save(update_fields=["is_deleted"])
+                set_document_deleted(str(existing.id), deleted=False, project_id=str(existing.project.id) if existing.project else None)
+
+            return Response(
+                {
+                    "status": "duplicate",
+                    "id": str(existing.id),
+                    "message": "This file already exists in this project."
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Save file into storage
         storage_path = f"uploads/{uploaded_file.name}"
         saved_path = default_storage.save(storage_path, uploaded_file)
 
-        #   before creating doc, resolve project
-       # require project_id (we enforce per-project isolation)
-        project_id = request.data.get("project_id") or request.query_params.get("project_id")
-        if not project_id:
-            return Response({"detail": "project_id is required for upload"}, status=status.HTTP_400_BAD_REQUEST)
-
-        from projects.models import Project
-        try:
-            project = Project.objects.get(id=project_id)
-        except Project.DoesNotExist:
-            return Response({"detail": "project not found"}, status=status.HTTP_400_BAD_REQUEST)
-                    
-        # -------- Create Document entry --------
+        # Create document
         doc = Document.objects.create(
             filename=uploaded_file.name,
             sha256=sha,
             size=len(file_bytes),
             metadata={"path": saved_path},
-            project_id=project_id,
+            project=project,
             status="queued",
         )
 
-        # -------- Trigger background ingestion task --------
         ingest_document_task.delay(str(doc.id))
 
-        return Response(
-            {"status": "queued", "id": str(doc.id)},
-            status=status.HTTP_201_CREATED,
-        )
+        return Response({"status": "queued", "id": str(doc.id)}, status=status.HTTP_201_CREATED)
 
-class DocumentDownloadView(APIView):
-    permission_classes = [permissions.AllowAny]
+    def destroy(self, request, pk=None):
+        doc = get_object_or_404(Document, id=pk)
+        if not doc.is_deleted:
+            doc.is_deleted = True
+            doc.save(update_fields=["is_deleted"])
+            # mark vectors in Qdrant as deleted
+            set_document_deleted(str(doc.id), deleted=True, project_id=str(doc.project.id) if doc.project else None)
 
-    def get(self, request, doc_id):
-        doc = get_object_or_404(Document, id=doc_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
-        # 1) try a FileField-like attribute first (if you later add one)
-        file_field = getattr(doc, "file", None) or getattr(doc, "filepath", None)
-        if file_field:
-            try:
-                # If file_field is a FileField instance
-                path = getattr(file_field, "path", None) or str(file_field)
-                f = open(path, "rb")
-                return FileResponse(f, as_attachment=True, filename=doc.filename)
-            except Exception:
-                raise Http404
+    @action(detail=True, methods=["get"], url_path="download")
+    def download(self, request, pk=None):
+        doc = get_object_or_404(Document, id=pk)
+        if doc.is_deleted:
+            raise Http404
 
-        # 2) fallback: check metadata (your UploadView stores path in metadata["path"])
-        meta = getattr(doc, "metadata", {}) or {}
-        storage_path = meta.get("path")  # e.g. "uploads/foo.pdf"
+        storage_path = (doc.metadata or {}).get("path")
         if not storage_path:
             return Response({"detail": "No file available"}, status=404)
 
         try:
-            # default_storage.open works even for remote storages (S3) that don't expose file.path
-            f = default_storage.open(storage_path, "rb")
-            response = FileResponse(f, as_attachment=True, filename=doc.filename or f"{doc.id}")
-            return response
+            file_obj = default_storage.open(storage_path, "rb")
         except Exception:
             raise Http404
+
+        content_type, _ = mimetypes.guess_type(doc.filename)
+        return FileResponse(
+            file_obj,
+            as_attachment=True,
+            filename=doc.filename or f"{doc.id}",
+            content_type=content_type,
+        )

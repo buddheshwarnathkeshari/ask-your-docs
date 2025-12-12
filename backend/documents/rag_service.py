@@ -189,12 +189,11 @@ def answer_query(conversation, user_text, top_k=6, temperature=0.0, max_output_t
     user_text: str
     Returns: answer_text, retrieved (list), meta (dict)
     """
-    # 1) embed query
+    # Embed query
     emb = gemini_embed_batch([user_text])[0]
-
-    # 2) search qdrant
-    project_id = getattr(conversation, "project_id", None) or (getattr(conversation, "project", None) and str(conversation.project.id))
-    retrieved = search_vectors(emb, top_k=top_k, project_id=project_id)
+    print("Query embedding obtained.", emb[:5])
+    # Search qdrant
+    retrieved = search_vectors(emb, top_k=top_k, project_id=conversation.project_id)
 
     # 3) load last N messages from conversation (if any)
     history_qs = conversation.messages.order_by("created_at").all() if hasattr(conversation, "messages") else []

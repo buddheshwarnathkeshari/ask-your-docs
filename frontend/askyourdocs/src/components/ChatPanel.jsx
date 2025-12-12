@@ -253,7 +253,7 @@ export default function ChatPanel({ project, onProjectRename }) {
       }
     } catch (err) {
       console.error("send message error", err);
-      setMessages(prev => [...prev, { role: "assistant", text: "The AI service is temporarily overloaded or out of quota. Please try again in a few moments." }]);
+      setMessages(prev => [...prev, { role: "assistant", text: "Send failed" }]);
     } finally {
       setSending(false);
     }

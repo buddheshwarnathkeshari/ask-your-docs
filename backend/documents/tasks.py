@@ -39,7 +39,6 @@ def ingest_document_task(self, doc_id: str):
             return {"error": "document has no project; cannot ingest without project"}
     
         # resolve storage path; default_storage saved path relative to MEDIA_ROOT
-        from django.conf import settings
         full_path = os.path.join(settings.MEDIA_ROOT, path)
 
         # extract
@@ -81,7 +80,8 @@ def ingest_document_task(self, doc_id: str):
                     "chunk_index": idx,
                     "text": chunk,                    # full chunk text
                     "chunk_text": chunk,              # alias some code might expect
-                    "text_snippet": chunk[:800]       # short preview for quick embeds / UI
+                    "text_snippet": chunk[:800],       # short preview for quick embeds / UI
+                    "is_deleted": False
                 }
                 to_upsert_ids.append(point_id)
                 # we'll fill vectors in batches below

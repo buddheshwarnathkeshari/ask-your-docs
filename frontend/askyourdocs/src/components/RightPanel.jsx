@@ -1,6 +1,6 @@
 // src/components/RightPanel.jsx
 import React, { useEffect, useRef, useState } from "react";
-import { listDocuments, uploadDocument } from "../api";
+import { listDocuments, uploadDocument, deleteDocument } from "../api";
 
 export default function RightPanel({ project, projectId: projectIdProp, onDocumentSelect }) {
   const projectId = project?.id || projectIdProp || null;
@@ -10,6 +10,7 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
   const [uploading, setUploading] = useState(false);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [uploadError, setUploadError] = useState("");
   const fileInputRef = useRef(null);
   const listRef = useRef(null);
 
@@ -56,6 +57,7 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
 
   // chosen file change
   const onFileChange = (e) => {
+    setUploadError("");
     const f = e.target.files?.[0] || null;
     setSelectedFile(f);
   };
@@ -69,15 +71,44 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
   const doUpload = async () => {
     if (!selectedFile) return;
     setUploading(true);
+    setUploadError("");
     try {
-      await uploadDocument(selectedFile, projectId);
-      // refresh list
+      const res = await uploadDocument(selectedFile, projectId);
+
+      if (res && res.status === "duplicate") {
+
+        // Remember old list before refresh
+        const beforeIds = new Set(documents.map(d => String(d.id)));
+
+        // Always refresh to pick up restored documents
+        await fetchDocs();
+
+        const restoredDocVisible =
+          !beforeIds.has(String(res.id));  // appears only if it was deleted earlier
+
+        // Scroll + blink in all cases
+        window.dispatchEvent(new CustomEvent("documents:scrollTo", {
+          detail: { documentId: res.id }
+        }));
+
+        if (!restoredDocVisible) {
+          // It was already in list → this is an actual duplicate → show error
+          setUploadError(res.message || "This file already exists in this project.");
+        } else {
+          // It was restored → treat as success, no error message
+          setUploadError("");
+        }
+
+        return;
+      }
+
+      // success: refresh list and notify
       await fetchDocs();
-      // notify chat panel etc.
       window.dispatchEvent(new CustomEvent("documents:updated", { detail: { projectId } }));
     } catch (err) {
       console.error("Upload failed", err);
-      alert(err.message || "Upload failed");
+      setUploadError(err.message || "Upload failed");
+      // optionally keep a toast/alert
     } finally {
       // reset input
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -91,11 +122,7 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
     const doc = confirmDelete;
     setConfirmDelete(null);
     try {
-      const res = await fetch(`/api/documents/${doc.id}/delete/`, { method: "DELETE" });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Delete failed");
-      }
+      await deleteDocument(doc.id);
       await fetchDocs();
       window.dispatchEvent(new CustomEvent("documents:updated", { detail: { projectId } }));
     } catch (err) {
@@ -195,7 +222,16 @@ export default function RightPanel({ project, projectId: projectIdProp, onDocume
           {uploading ? "Uploading…" : "Upload"}
         </button>
       </div>
-
+      {uploadError && (
+        <div style={{
+          color: "#ff7979",
+          fontSize: 13,
+          marginTop: -4,
+          marginBottom: 4,
+        }}>
+          {uploadError}
+        </div>
+      )}
       <div style={{ color: "#aaa", fontSize: 13 }}>
         {project ? (
           <div>Project: <strong style={{ color: "inherit" }}>{project.name}</strong></div>

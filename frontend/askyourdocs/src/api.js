@@ -51,11 +51,12 @@ export async function uploadDocument(file, projectId) {
   fd.append("file", file);
   if (projectId) fd.append("project_id", projectId);
 
-  const res = await fetch(`${API_ROOT}/documents/upload/`, {
+  const res = await fetch(`${API_ROOT}/documents/`, {
     method: "POST",
     body: fd,
   });
 
+  // Consider both 200 (duplicate) and 201 (created) as OK results
   if (!res.ok) {
     let err = "Upload failed";
     try {
@@ -76,7 +77,7 @@ export async function listDocuments(projectId) {
 }
 
 export async function deleteDocument(docId) {
-  const res = await fetch(`${API_ROOT}/documents/${docId}/delete/`, {
+  const res = await fetch(`${API_ROOT}/documents/${docId}/`, {
     method: "DELETE",
   });
   if (res.status === 204 || res.status === 200) return true;

@@ -1,9 +1,7 @@
-from django.urls import path
-from .views import UploadView, DocumentListView, DocumentDeleteView, DocumentDownloadView
+from rest_framework.routers import DefaultRouter
+from .views import DocumentViewSet
 
-urlpatterns = [
-    path("upload/", UploadView.as_view(), name="upload"),
-    path("", DocumentListView.as_view(), name="documents-list"),
-    path("<uuid:doc_id>/delete/", DocumentDeleteView.as_view()),
-    path("<uuid:doc_id>/download/", DocumentDownloadView.as_view(), name="document-download"),
-]
+router = DefaultRouter()
+router.register(r'', DocumentViewSet, basename='document')
+
+urlpatterns = router.urls
