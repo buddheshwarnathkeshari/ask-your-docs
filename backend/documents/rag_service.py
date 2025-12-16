@@ -12,6 +12,12 @@ PROMPT_SYSTEM = (
     "If information is not present in the snippets, say \"I don't know\"."
 )
 
+PROMPT_EXPANSION = (
+    "You are a query expansion generator. Your task is to rephrase the user's query into 3 distinct, "
+    "semantically similar queries that might retrieve better search results from a knowledge base. "
+    "Return only the queries, one per line. Do not include any other text, numbers, or bullet points."
+)
+
 def build_context_snippets(retrieved):
     parts = []
     for idx, r in enumerate(retrieved, start=1):
@@ -182,20 +188,40 @@ def remove_inline_source_markers(answer_text, retrieved=None):
 
     return text.strip()
 
-
-def answer_query(conversation, user_text, top_k=100, temperature=0.0, max_output_tokens=300):
+def answer_query(conversation, user_text, top_k=10, temperature=0.0, max_output_tokens=300): # Reduced top_k for RRF efficiency
     """
-    conversation: Conversation model instance (Django ORM)
-    user_text: str
-    Returns: answer_text, retrieved (list), meta (dict)
+    Implements RAG Fusion: Query Expansion, Parallel Retrieval, and RRF.
     """
-    # Embed query
-    emb = gemini_embed_batch([user_text])[0]
-    print("Query embedding obtained.", emb[:5])
-    # Search qdrant
-    retrieved = search_vectors(emb, top_k=top_k, project_id=conversation.project_id)
+    if not user_text:
+        return "Please enter a query.", [], {}
 
-    # 3) load last N messages from conversation (if any)
+    # 1) Query Expansion
+    expanded_queries = expand_query(user_text)
+    print("Expanded Queries:", expanded_queries)
+    
+    # 2) Parallel Embedding
+    all_embeddings = gemini_embed_batch(expanded_queries)
+    
+    all_retrieved_results = []
+    
+    # 3) Parallel Retrieval (using the existing search_vectors)
+    for query_emb in all_embeddings:
+        # Note: We retrieve a large number of results for RRF to work well
+        retrieved_for_query = search_vectors(
+            query_emb, 
+            top_k=int(top_k * 2.5), # Retrieve more results than the final top_k
+            project_id=conversation.project_id
+        )
+        all_retrieved_results.append(retrieved_for_query)
+        
+    # 4) Reciprocal Rank Fusion (RRF)
+    # The RRF function will deduplicate and re-rank the results.
+    fused_retrieved = reciprocal_rank_fusion(all_retrieved_results)
+    
+    # Take the final desired top_k for context building
+    retrieved = fused_retrieved[:top_k] 
+
+    # load last N messages from conversation (if any)
     history_qs = conversation.messages.order_by("created_at").all() if hasattr(conversation, "messages") else []
     history = [{"role": m.role, "text": m.text} for m in history_qs][-8:]
 
@@ -203,7 +229,7 @@ def answer_query(conversation, user_text, top_k=100, temperature=0.0, max_output
     prompt = make_prompt(history, retrieved, user_text)
 
     # 5) call LLM
-    answer_text, meta = "None", {} #call_gemini_chat(prompt, temperature=temperature, max_output_tokens=max_output_tokens)
+    answer_text, meta = call_gemini_chat(prompt, temperature=temperature, max_output_tokens=max_output_tokens) # call_gemini_chat uncommented
 
     # 6) post-process for human-friendly source labels
     # try:
@@ -211,11 +237,7 @@ def answer_query(conversation, user_text, top_k=100, temperature=0.0, max_output
     # except Exception:
     #     pass
 
-    # # final defensive cleanup
-    # try:
-    #     answer_text = strip_remaining_source_markers(answer_text)
-    # except Exception:
-    #     pass
+    # final defensive cleanup
     try:
         answer_text = remove_inline_source_markers(answer_text, retrieved)
     except Exception:
@@ -223,3 +245,56 @@ def answer_query(conversation, user_text, top_k=100, temperature=0.0, max_output
         pass
 
     return answer_text, retrieved, meta
+
+
+# RAG FUSION IMPLEMENTATION (Add this function to rag_service.py)
+
+def reciprocal_rank_fusion(results_lists, k=60):
+    """
+    Applies Reciprocal Rank Fusion (RRF) to a list of search result lists.
+    Ranks documents based on the reciprocal of their rank.
+    """
+    fused_scores = {}
+    for results in results_lists:
+        for rank, item in enumerate(results):
+            # Qdrant items have unique 'id' (point ID)
+            item_id = item['id']
+            
+            # RRF formula: 1 / (rank + k)
+            # rank is 0-indexed, so rank+1 is the true rank
+            score = 1.0 / (rank + 1 + k)
+            
+            if item_id not in fused_scores:
+                fused_scores[item_id] = {'score': 0, 'payload': item['payload']}
+            
+            fused_scores[item_id]['score'] += score
+
+    # Sort the fused scores in descending order
+    fused_results = sorted(
+        fused_scores.values(), 
+        key=lambda x: x['score'], 
+        reverse=True
+    )
+    
+    return fused_results
+
+def expand_query(user_query: str) -> list[str]:
+    """
+    Generates multiple related queries using the LLM.
+    """
+    # Use a small, fast model for this job if possible, or the existing chat model
+    response, _ = call_gemini_chat(
+        prompt=PROMPT_EXPANSION + f"\n\nOriginal Query: {user_query}",
+        temperature=0.3, # Use a low temperature for predictable output
+        max_output_tokens=150,
+    )
+    
+    # Split the response into lines and filter empty strings
+    queries = [q.strip() for q in response.split('\n') if q.strip()]
+    
+    # Ensure the original query is always the first one
+    if user_query not in queries:
+        queries.insert(0, user_query)
+        
+    # Limit to a reasonable number (e.g., 5 total)
+    return queries[:5]
