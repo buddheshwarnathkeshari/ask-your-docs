@@ -1,4 +1,4 @@
-# Ask Your Docs: Enterprise Retrieval-Augmented Generation (RAG) System
+# Ask Your Docs: Retrieval-Augmented Generation (RAG) System
 
 ## Project Summary
 
@@ -13,6 +13,10 @@ This project demonstrates expertise in building complex, distributed, and scalab
 * **Asynchronous Ingestion:** Employs **Celery** and **Redis** for asynchronous processing of document uploads, embedding generation, and vector insertion, ensuring the main API remains highly responsive.
 * **Full-Stack Interface:** A modern user interface built with **React** for seamless document management and chat interaction.
 * **Containerized Environment:** Fully managed via **Docker** and `docker-compose` for consistent, one-command local environment setup.
+
+## Demo Screenshots
+
+
 
 ## Technology Stack & Architecture
 
