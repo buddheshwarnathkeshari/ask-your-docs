@@ -1,6 +1,6 @@
 # backend/documents/rag_service.py
-from .gemini_client import gemini_embed_batch, call_gemini_chat
-from .qdrant_search import search_vectors
+from core.clients.gemini import gemini_service
+from core.clients.qdrant import qdrant_service
 from documents.models import DocumentChunk, Document
 from django.db import transaction
 import textwrap
@@ -200,14 +200,14 @@ def answer_query(conversation, user_text, top_k=10, temperature=0.0, max_output_
     print("Expanded Queries:", expanded_queries)
     
     # 2) Parallel Embedding
-    all_embeddings = gemini_embed_batch(expanded_queries)
+    all_embeddings = gemini_service.embed_batch(expanded_queries)
     
     all_retrieved_results = []
     
     # 3) Parallel Retrieval (using the existing search_vectors)
     for query_emb in all_embeddings:
         # Note: We retrieve a large number of results for RRF to work well
-        retrieved_for_query = search_vectors(
+        retrieved_for_query = qdrant_service.search_vectors(
             query_emb, 
             top_k=int(top_k * 2.5), # Retrieve more results than the final top_k
             project_id=conversation.project_id
@@ -229,7 +229,7 @@ def answer_query(conversation, user_text, top_k=10, temperature=0.0, max_output_
     prompt = make_prompt(history, retrieved, user_text)
 
     # 5) call LLM
-    answer_text, meta = call_gemini_chat(prompt, temperature=temperature, max_output_tokens=max_output_tokens) # call_gemini_chat uncommented
+    answer_text, meta = gemini_service.generate_answer(prompt, temperature=temperature, max_tokens=max_output_tokens)
 
     # 6) post-process for human-friendly source labels
     # try:
@@ -246,8 +246,6 @@ def answer_query(conversation, user_text, top_k=10, temperature=0.0, max_output_
 
     return answer_text, retrieved, meta
 
-
-# RAG FUSION IMPLEMENTATION (Add this function to rag_service.py)
 
 def reciprocal_rank_fusion(results_lists, k=60):
     """
@@ -283,10 +281,9 @@ def expand_query(user_query: str) -> list[str]:
     Generates multiple related queries using the LLM.
     """
     # Use a small, fast model for this job if possible, or the existing chat model
-    response, _ = call_gemini_chat(
+    response, _ = gemini_service.generate_answer(
         prompt=PROMPT_EXPANSION + f"\n\nOriginal Query: {user_query}",
         temperature=0.3, # Use a low temperature for predictable output
-        max_output_tokens=150,
     )
     
     # Split the response into lines and filter empty strings

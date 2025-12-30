@@ -174,8 +174,8 @@ Use docker-compose to build the images and launch all services (Postgres, Qdrant
 
 ### Step 4: Database Setup and Initialization
 ```
-# Enter the Django service container (The service name may vary, check your docker-compose.yml)
-docker exec -it askyourdocs_backend bash 
+# Enter the Django service container 
+docker compose exec backend bash
 
 # Run Django migrations
 python manage.py makemigrations
@@ -198,3 +198,13 @@ Once all services are healthy and running:
 
 * Qdrant UI Dashboard: http://localhost:6333/dashboard (Monitor your vector collections here)
 
+### Step 6: Access the logs
+``` 
+docker-compose logs -f backend
+docker-compose logs -f worker
+```
+
+### Stop all services
+``` 
+docker compose down   
+```

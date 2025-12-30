@@ -1,5 +1,5 @@
 from rest_framework import viewsets, status, permissions
-from documents.qdrant_search import set_document_deleted
+from core.clients.qdrant import qdrant_service
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
@@ -56,7 +56,7 @@ class DocumentViewSet(viewsets.ViewSet):
             if existing.is_deleted:
                 existing.is_deleted = False
                 existing.save(update_fields=["is_deleted"])
-                set_document_deleted(str(existing.id), deleted=False, project_id=str(existing.project.id) if existing.project else None)
+                qdrant_service.set_document_deleted_status(str(existing.id), is_deleted=False, project_id=str(existing.project.id))
 
             return Response(
                 {
@@ -91,7 +91,7 @@ class DocumentViewSet(viewsets.ViewSet):
             doc.is_deleted = True
             doc.save(update_fields=["is_deleted"])
             # mark vectors in Qdrant as deleted
-            set_document_deleted(str(doc.id), deleted=True, project_id=str(doc.project.id) if doc.project else None)
+            qdrant_service.set_document_deleted_status(str(doc.id), is_deleted=True, project_id=str(doc.project.id))
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 

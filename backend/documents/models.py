@@ -3,12 +3,23 @@ import uuid
 from django.utils import timezone
 from projects.models import Project
 
+class DocumentStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    INGESTING = "ingesting", "Ingesting"
+    DONE = "done", "Done"
+    ERROR = "error", "Error"
+
 class Document(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     filename = models.CharField(max_length=512)
     sha256 = models.CharField(max_length=64, db_index=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
-    status = models.CharField(max_length=32, default="pending")
+    status = models.CharField(
+        max_length=32,
+        choices=DocumentStatus.choices,
+        default=DocumentStatus.PENDING,
+        db_index=True,
+    )
     size = models.BigIntegerField(null=True)
     metadata = models.JSONField(default=dict)
     project = models.ForeignKey(Project, null=True, blank=True, on_delete=models.CASCADE)  # new field
@@ -16,6 +27,11 @@ class Document(models.Model):
 
     def __str__(self):
         return f"{self.filename} ({self.id})"
+
+    def update_status(self, new_status: str, save: bool = True):
+        self.status = new_status
+        if save:
+            self.save(update_fields=["status"])
 
 class DocumentChunk(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
