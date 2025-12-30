@@ -4,32 +4,86 @@
 
 **Ask Your Docs** is a full-stack, end-to-end **Retrieval-Augmented Generation (RAG) system** designed to provide accurate, context-aware Q&A capabilities over proprietary and unstructured document corpora.
 
-This project demonstrates expertise in building complex, distributed, and scalable AI applications by leveraging cutting-edge components in a robust microservices architecture.
-
 ## Key Features
 
-* **Contextual Q&A:** Answers user queries by retrieving contextually relevant data chunks from an indexed corpus, drastically reducing LLM hallucinations.
-* **Scalable RAG Pipeline:** Utilizes **Gemini 1.5 Flash LLM** for generation and **Qdrant (Vector Database)** for high-performance vector indexing and low-latency similarity search.
-* **Asynchronous Ingestion:** Employs **Celery** and **Redis** for asynchronous processing of document uploads, embedding generation, and vector insertion, ensuring the main API remains highly responsive.
-* **Full-Stack Interface:** A modern user interface built with **React** for seamless document management and chat interaction.
-* **Containerized Environment:** Fully managed via **Docker** and `docker-compose` for consistent, one-command local environment setup.
+### Retrieval & Intelligence
 
+- **Contextual Q&A**  
+  Retrieves semantically relevant document chunks from an indexed corpus to generate grounded answers, significantly reducing LLM hallucinations.
+
+- **Scalable RAG Pipeline**  
+  Uses **Gemini 2.0 Flash LLM** for response generation and **Qdrant (Vector Database)** for high-performance, low-latency vector similarity search.
+
+- **High-Quality Semantic Embeddings**  
+  Leverages **Gemini `embedding-001`** to generate **768-dimensional dense semantic vectors**, optimized for long-context document understanding and high-recall similarity search in Qdrant.
+
+- **RAG Fusion for Improved Recall**  
+  Implements multi-query **RAG Fusion** by generating multiple reformulations of user queries and merging results, improving recall and reducing embedding-space blind spots.
+
+---
+
+### Document & Project Management
+
+- **Project-Based Document Organization**  
+  Supports logical grouping of documents into isolated projects, enabling scoped retrieval and clean separation of document contexts.
+
+- **Content-Based Deduplication & Integrity**  
+  Uses **SHA-256 hashing** to fingerprint document contents, preventing duplicate uploads, detecting document changes, and ensuring embedding integrity across ingestion pipelines.
+
+- **Document Lifecycle Management**  
+  Provides full document control including upload, download, and deletion, with consistent synchronization across metadata storage and vector indexes.
+
+---
+
+### User Experience & Answer Traceability
+
+- **Source-Aware Responses**  
+  Clearly displays which documents were used to generate each answer, improving transparency, explainability, and user trust.
+
+- **Interactive Document Highlighting**  
+  Clicking a referenced document in chat automatically scrolls and highlights the corresponding file in the document list, enabling seamless navigation between answers and sources.
+
+- **Modern Full-Stack Interface**  
+  A responsive **React-based UI** designed for intuitive document management and conversational interaction.
+
+---
+
+### Infrastructure & Scalability
+
+- **Asynchronous Ingestion Pipeline**  
+  Uses **Celery** and **Redis** to decouple document ingestion, embedding generation, and vector insertion, ensuring the main API remains highly responsive under load.
+
+- **Containerized Environment**  
+  Fully containerized using **Docker** and `docker-compose` for reproducible, one-command local environment setup.
+
+- **Configuration-Driven Design**  
+  All critical system parameters including LLM model, embedding model, vector dimensions, and service endpoints are externally configurable via environment variables, enabling easy experimentation, cost optimization, and model swaps without code changes.
+
+---
 ## Demo Screenshots
+> Demo showcasing project-based document selection, source-grounded answers, and interactive document highlighting.
 
+![Ask Your Docs Demo](assets/demo1.gif)
+
+![Ask Your Docs Demo](assets/demo2.gif)
 
 
 ## Technology Stack & Architecture
 
 | Category | Component | Rationale / Use |
 | :--- | :--- | :--- |
-| **LLM & AI** | **Gemini 1.5 Flash** | Used for high-speed, cost-effective, and context-aware text generation. |
-| **Embedding** | Google's **Text Embedding Model** | Used to generate dense vector representations of document chunks and user queries. |
-| **Vector DB** | **Qdrant** | High-performance open-source vector database for vector indexing and querying. |
-| **Backend** | **Python**, **Django (DRF)** | Robust framework for building scalable REST APIs, handling core application logic, and user management. |
-| **Frontend** | **React** | Modern framework for building a responsive, chat-based user interface. |
-| **Database** | **PostgreSQL** | Primary relational database for storing metadata, user data, and document status. |
-| **Queue/Cache** | **Celery, Redis** | **Celery** for task queue management (heavy embedding jobs). **Redis** for the Celery broker. |
-| **DevOps** | **Docker**, `docker-compose` | Containerization for simplified, deployment-ready development environments. |
+| **LLM & AI** | **Gemini 2.0 Flash** | High-speed, cost-efficient LLM optimized for low-latency, context-aware response generation in interactive RAG workflows. |
+| **Embeddings** | **Gemini `embedding-001` (768-dim)** | Generates dense semantic vectors for document chunks and queries, optimized for long-context understanding and high-recall similarity search. |
+| **Vector Database** | **Qdrant** | High-performance open-source vector database supporting cosine similarity, metadata filtering, and scalable ANN search. |
+| **Retrieval Strategy** | **RAG Fusion (Multi-Query Retrieval)** | Improves recall by generating multiple query reformulations and merging results to reduce embedding-space blind spots. |
+| **Backend** | **Python**, **Django REST Framework** | Production-ready backend for API orchestration, authentication, project isolation, document lifecycle management, and RAG workflows. |
+| **Async Processing** | **Celery** | Offloads heavy ingestion tasks (parsing, hashing, embedding generation, vector insertion) to background workers for responsiveness and fault isolation. |
+| **Message Broker / Cache** | **Redis** | Acts as Celery broker and transient state store for fast task coordination and low-latency operations. |
+| **Relational Database** | **PostgreSQL** | Stores document metadata, project mappings, ingestion status, and audit-friendly relational data. |
+| **Content Integrity** | **SHA-256 Hashing** | Content-based fingerprinting for document deduplication, change detection, and embedding consistency guarantees. |
+| **Frontend** | **React** | Responsive, component-driven UI for document management, conversational Q&A, source visualization, and interactive highlighting. |
+| **DevOps & Environment** | **Docker**, `docker-compose` | Fully containerized, reproducible local and deployment-ready environment with one-command startup. |
+
 
 ## Local Setup and Deployment
 
@@ -51,7 +105,7 @@ You must create a working `.env` files in backend and frontend based on the prov
 1.  **Create the `.env` file** by copying the template:
 
     ```bash
-    cp backend/env.template backend/.env && cp frontend/env.template frontend/.env
+    cp backend/.env.template backend/.env && cp frontend/.env.template frontend/.env
     ```
 
 2.  **Open the new `backend/.env` file** and populate it with your actual values. A correctly configured file based on your project details should look like this (remember to replace the placeholder `GEMINI_API_KEY`):
